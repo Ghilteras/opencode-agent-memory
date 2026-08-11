@@ -1,12 +1,13 @@
 # opencode-agent-memory
 
-> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.3.0 of
+> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.0 of
 > [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory)
 > (joshuadavidthomas, MIT). This release adopts the "proper timestamps without cache
 > busting" design (per-block `modified_at` frontmatter, remove the volatile
 > `memory_metadata` block, append memory XML at the end of the system prompt) derived
 > from the Annakan/draxxris fork plan. Upstream PR #20 (freeze metadata timestamps) is
-> superseded by the stronger per-block design and remains open upstream.
+> superseded by the stronger per-block design and remains open upstream. v0.4.0 swaps
+> the embedding model to a multilingual one and adds a versioned embedding format.
 
 [Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
 
@@ -86,7 +87,22 @@ When the journal is enabled, the agent gets 3 additional tools:
 | `journal_search` | Search entries semantically, filter by project or tags, with pagination |
 | `journal_read` | Read a specific journal entry by ID |
 
-Journal entries are append-only markdown files with YAML frontmatter, stored in `~/.config/opencode/journal/`. Each entry records which project, model, provider, agent, and session it was written from. Semantic search uses local embeddings ([all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L6-v2)) - no data leaves your machine.
+Journal entries are append-only markdown files with YAML frontmatter, stored in `~/.config/opencode/journal/`. Each entry records which project, model, provider, agent, and session it was written from. Semantic search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine.
+
+Embedding files (`.embedding`, written alongside each entry) use a versioned format (`{ v: 2, model, dimension, vector }`) so that stale or mismatched embeddings are detected: if the stored dimension doesn't match the current model, the entry falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
+
+### cacheDir Configuration
+
+By default the transformers.js model cache lives in the default location (`~/.cache/huggingface`). You can relocate it by setting `cacheDir` at the top level of `~/.config/opencode/agent-memory.json`:
+
+```json
+{
+  "cacheDir": "/home/angelo/.cache/opencode/memory-model",
+  "journal": {
+    "enabled": true
+  }
+}
+```
 
 ### Default Blocks
 

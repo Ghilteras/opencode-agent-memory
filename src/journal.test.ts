@@ -14,7 +14,13 @@ mock.module("./embeddings", () => ({
     );
     return Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
   },
+  EMBEDDING_DIMENSION: 8,
+  embeddingModelName: () => "test-model",
   cosineSimilarity: (a: number[], b: number[]) => {
+    if (a.length !== b.length)
+      throw new Error(
+        `Embedding dimension mismatch: ${a.length} vs ${b.length}`,
+      );
     let dot = 0;
     let normA = 0;
     let normB = 0;
@@ -149,8 +155,12 @@ describe("journal store", () => {
     const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
     const raw = await fs.readFile(embeddingFile, "utf-8");
     const embedding = JSON.parse(raw);
-    expect(Array.isArray(embedding)).toBe(true);
-    expect(embedding.length).toBeGreaterThan(0);
+    // v0.4.0: versioned embedding object, not a bare array
+    expect(embedding.v).toBe(2);
+    expect(embedding.model).toBe("test-model");
+    expect(embedding.dimension).toBe(8);
+    expect(Array.isArray(embedding.vector)).toBe(true);
+    expect(embedding.vector.length).toBeGreaterThan(0);
   });
 
   test("read returns full entry by id", async () => {
@@ -380,5 +390,119 @@ describe("journal store", () => {
     const result = await store.search({ text: "Rust performance" });
     // Should find at least the matching entry
     expect(result.total).toBeGreaterThan(0);
+  });
+
+  test("search skips stale-dimension embedding and falls back to text match", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Stale dims entry",
+      body: "unique-stale-dim-content",
+    });
+
+    // Simulate a v2 embedding with a WRONG dimension (e.g. from a 768d model).
+    // Search must not throw: it should skip the embedding and fall back to
+    // text matching for this entry.
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.writeFile(
+      embeddingFile,
+      JSON.stringify({
+        v: 2,
+        model: "some-768d-model",
+        dimension: 768,
+        vector: Array.from({ length: 768 }, () => 0.1),
+      }),
+      "utf-8",
+    );
+
+    // Query whose embedding would collide with the stale one if cosine were
+    // attempted (dimension mismatch would throw inside cosineSimilarity).
+    const result = await store.search({ text: "unique-stale-dim-content" });
+    const titles = result.entries.map((e) => e.title);
+    expect(titles).toContain("Stale dims entry");
+    // No throw above is the assertion: mismatched dimension degrades to text.
+  });
+
+  test("search skips corrupt v2 embedding (empty vector) without throwing", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Corrupt embedding entry",
+      body: "unique-corrupt-embedding-content",
+    });
+
+    // Simulate a corrupt-but-well-formed v2 embedding: dimension claims 384
+    // but the vector is empty. Search must NOT throw — it should skip the
+    // embedding and fall back to text matching for this entry.
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.writeFile(
+      embeddingFile,
+      JSON.stringify({ v: 2, model: "some-model", dimension: 8, vector: [] }),
+      "utf-8",
+    );
+
+    const result = await store.search({ text: "unique-corrupt-embedding-content" });
+    const titles = result.entries.map((e) => e.title);
+    expect(titles).toContain("Corrupt embedding entry");
+    // No throw above is the assertion: corrupt v2 embedding degrades to text.
+  });
+
+  test("search skips corrupt v2 embedding (missing vector) without throwing", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Missing vector entry",
+      body: "unique-missing-vector-content",
+    });
+
+    // v2 file that omits the vector field entirely. Search must not throw.
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.writeFile(
+      embeddingFile,
+      JSON.stringify({ v: 2, model: "some-model", dimension: 8 }),
+      "utf-8",
+    );
+
+    const result = await store.search({ text: "unique-missing-vector-content" });
+    const titles = result.entries.map((e) => e.title);
+    expect(titles).toContain("Missing vector entry");
+  });
+
+  test("legacy bare-array embedding is still usable for semantic search", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Legacy embedding",
+      body: "legacy-vector-body",
+    });
+
+    // Overwrite with a legacy v1 bare-array embedding (from all-MiniLM-L6-v2,
+    // which also produces 8-dim vectors under the test mock). Use the same
+    // mock formula as generateEmbedding so the cosine is positive and the
+    // entry is actually matched via semantic search.
+    const hash = Array.from("legacy-vector-body").reduce(
+      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
+      0,
+    );
+    const legacyVector = Array.from(
+      { length: 8 },
+      (_, i) => Math.sin(hash + i),
+    );
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.writeFile(
+      embeddingFile,
+      JSON.stringify(legacyVector),
+      "utf-8",
+    );
+
+    // Legacy array must be treated as { vector, model: "unknown-legacy",
+    // dimension: length }; with a matching dimension it stays usable.
+    const result = await store.search({ text: "legacy-vector-body" });
+    const titles = result.entries.map((e) => e.title);
+    expect(titles).toContain("Legacy embedding");
   });
 });

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
 
-import { cosineSimilarity, generateEmbedding } from "./embeddings";
+import { cosineSimilarity, EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
 import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./frontmatter";
 
 const TagSchema = z.looseObject({
@@ -14,6 +14,7 @@ const TagSchema = z.looseObject({
 });
 
 const ConfigSchema = z.looseObject({
+  cacheDir: z.string().optional(),
   journal: z
     .looseObject({
       enabled: z.boolean().optional(),
@@ -117,11 +118,41 @@ async function readEntryFile(filePath: string): Promise<JournalEntry> {
   };
 }
 
-async function loadEmbedding(entryPath: string): Promise<number[] | undefined> {
+type ParsedEmbedding =
+  | { vector: number[]; model: string; dimension: number }
+  | undefined;
+
+async function loadEmbedding(entryPath: string): Promise<ParsedEmbedding> {
   const ePath = embeddingPath(entryPath);
   try {
     const raw = await fs.readFile(ePath, "utf-8");
-    return JSON.parse(raw) as number[];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      // Legacy v1 (bare array from all-MiniLM-L6-v2)
+      return {
+        vector: parsed as number[],
+        model: "unknown-legacy",
+        dimension: parsed.length,
+      };
+    }
+    if (parsed && typeof parsed === "object" && parsed.v === 2) {
+      const vector = Array.isArray(parsed.vector)
+        ? parsed.vector
+        : undefined;
+      if (
+        vector &&
+        vector.length === (parsed.dimension as number) &&
+        vector.length > 0
+      ) {
+        return {
+          vector,
+          model: parsed.model as string,
+          dimension: parsed.dimension as number,
+        };
+      }
+      return undefined;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -160,7 +191,7 @@ export type JournalStore = {
   }): Promise<{ entries: JournalEntry[]; total: number; allTags: string[] }>;
 };
 
-export function createJournalStore(configDir?: string): JournalStore {
+export function createJournalStore(configDir?: string, cacheDir?: string): JournalStore {
   const journalDir = path.join(
     configDir ?? path.join(os.homedir(), ".config", "opencode"),
     "journal",
@@ -192,10 +223,15 @@ export function createJournalStore(configDir?: string): JournalStore {
       // Generate and save embedding for semantic search
       const searchableText = `${entry.title}\n${entry.body}`;
       try {
-        const embedding = await generateEmbedding(searchableText);
+        const embedding = await generateEmbedding(searchableText, cacheDir);
         await fs.writeFile(
           embeddingPath(filePath),
-          JSON.stringify(embedding),
+          JSON.stringify({
+            v: 2, // schema version for the embedding file
+            model: embeddingModelName(), // the embedding model that produced it
+            dimension: EMBEDDING_DIMENSION,
+            vector: embedding, // the actual float array
+          }),
           "utf-8",
         );
       } catch {
@@ -256,7 +292,7 @@ export function createJournalStore(configDir?: string): JournalStore {
       let queryEmbedding: number[] | undefined;
       if (query.text) {
         try {
-          queryEmbedding = await generateEmbedding(query.text);
+          queryEmbedding = await generateEmbedding(query.text, cacheDir);
         } catch {
           // Fall back to text search if embedding fails
         }
@@ -297,9 +333,21 @@ export function createJournalStore(configDir?: string): JournalStore {
         if (query.text) {
           if (queryEmbedding) {
             // Semantic search
-            const entryEmbedding = await loadEmbedding(filePath);
-            if (entryEmbedding) {
-              score = cosineSimilarity(queryEmbedding, entryEmbedding);
+            const storedEmbedding = await loadEmbedding(filePath);
+            if (storedEmbedding) {
+              // Hard gate: dimension must match, or the embedding is stale
+              // (different model) and cannot be compared with cosine.
+              // A mismatched/stale embedding degrades gracefully to text match.
+              if (storedEmbedding.dimension !== EMBEDDING_DIMENSION) {
+                const haystack =
+                  `${entry.title}\n${entry.body}`.toLowerCase();
+                score = haystack.includes(query.text.toLowerCase()) ? 0.5 : 0;
+              } else {
+                score = cosineSimilarity(
+                  queryEmbedding,
+                  storedEmbedding.vector,
+                );
+              }
             } else {
               // No embedding stored; fall back to text match
               const haystack =

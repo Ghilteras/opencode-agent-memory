@@ -1,6 +1,6 @@
 {
   "name": "@ghilteras/opencode-agent-memory",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Letta-style editable memory blocks + journal for OpenCode (maintained fork of opencode-agent-memory).",
   "author": "Angelo Pantano <ghilteras@protonmail.com>",
   "license": "MIT",

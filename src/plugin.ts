@@ -36,7 +36,7 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
   let journalSystemNote = "";
 
   if (journalEnabled) {
-    const journalStore = createJournalStore();
+    const journalStore = createJournalStore(undefined, config.cacheDir);
     journalTools = {
       journal_write: JournalWrite(journalStore, journalCtx),
       journal_read: JournalRead(journalStore),
