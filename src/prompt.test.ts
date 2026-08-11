@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { MemoryBlock } from "./memory";
 import { renderMemoryBlocks } from "./prompt";
 
 describe("renderMemoryBlocks", () => {
@@ -47,8 +48,7 @@ describe("renderMemoryBlocks", () => {
     expect(xml).toContain("</memory_instructions>");
   });
 
-  test("includes memory metadata block with timestamps", () => {
-    const testDate = new Date("2025-01-15T10:30:00Z");
+  test("includes per-block last_modified in metadata", () => {
     const xml = renderMemoryBlocks([
       {
         scope: "global",
@@ -58,14 +58,30 @@ describe("renderMemoryBlocks", () => {
         readOnly: false,
         value: "hi",
         filePath: "/tmp/human.md",
-        lastModified: testDate,
+        lastModified: new Date("2025-01-15T10:30:00Z"),
       },
     ]);
 
-    expect(xml).toContain("<memory_metadata>");
-    expect(xml).toContain("The current system date is:");
-    expect(xml).toContain("Memory blocks were last modified:");
-    expect(xml).toContain("</memory_metadata>");
+    expect(xml).toContain("last_modified=2025-01-15T10:30:00.000Z");
+    expect(xml).not.toContain("<memory_metadata>");
+    expect(xml).not.toContain("The current system date is:");
+  });
+
+  test("does not contain volatile new Date() content", () => {
+    const block: MemoryBlock = {
+      scope: "global",
+      label: "human",
+      description: "User prefs",
+      limit: 10,
+      readOnly: false,
+      value: "hi",
+      filePath: "/tmp/human.md",
+      lastModified: new Date("2025-01-15T10:30:00Z"),
+    };
+    const xml = renderMemoryBlocks([block]);
+    const xml2 = renderMemoryBlocks([block]);
+
+    expect(xml).toBe(xml2);
   });
 
   test("handles empty value gracefully", () => {
@@ -117,16 +133,19 @@ describe("renderMemoryBlocks", () => {
     // Check overall structure order
     const instructionsIndex = xml.indexOf("<memory_instructions>");
     const blocksIndex = xml.indexOf("<memory_blocks>");
-    const metadataIndex = xml.indexOf("<memory_metadata>");
 
     expect(instructionsIndex).toBeLessThan(blocksIndex);
-    expect(blocksIndex).toBeLessThan(metadataIndex);
+    expect(xml).not.toContain("<memory_metadata>");
 
     // Check both blocks present
     expect(xml).toContain("<persona>");
     expect(xml).toContain("</persona>");
     expect(xml).toContain("<project>");
     expect(xml).toContain("</project>");
+
+    // Check per-block last_modified timestamps
+    expect(xml).toContain("last_modified=2025-01-15T08:00:00.000Z");
+    expect(xml).toContain("last_modified=2025-01-15T10:30:00.000Z");
 
     // Check line numbers in multi-line value
     expect(xml).toContain("1→ I am helpful");

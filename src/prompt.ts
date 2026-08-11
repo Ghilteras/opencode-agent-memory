@@ -4,21 +4,6 @@ import { MEMORY_INSTRUCTIONS } from "./letta";
 const LINE_NUMBER_WARNING =
   "# NOTE: Line numbers shown below (with arrows like '1→') are to help during editing. Do NOT include line number prefixes in your memory edit tool calls.";
 
-function renderMemoryMetadata(blocks: MemoryBlock[]): string {
-  const now = new Date();
-
-  const lastModified = blocks.reduce(
-    (latest, block) => (block.lastModified > latest ? block.lastModified : latest),
-    new Date(0)
-  );
-
-  return `<memory_metadata>
-- The current system date is: ${now.toISOString()}
-- Memory blocks were last modified: ${lastModified.toISOString()}
-- Use memory tools to manage your memory blocks
-</memory_metadata>`;
-}
-
 export function renderMemoryBlocks(blocks: MemoryBlock[]): string {
   if (blocks.length === 0) {
     return "";
@@ -48,10 +33,13 @@ export function renderMemoryBlocks(blocks: MemoryBlock[]): string {
 ${desc}
 </description>
 <metadata>
-- chars_current=${block.value.length}
-- chars_limit=${block.limit}
-- read_only=${block.readOnly}
-- scope=${block.scope}
+${[
+  `- chars_current=${block.value.length}`,
+  `- chars_limit=${block.limit}`,
+  `- read_only=${block.readOnly}`,
+  `- scope=${block.scope}`,
+  `- last_modified=${block.lastModified.toISOString()}`,
+].join("\n")}
 </metadata>
 <warning>
 ${LINE_NUMBER_WARNING}
@@ -65,8 +53,6 @@ ${numberedValue}
   }
 
   parts.push("</memory_blocks>");
-  parts.push("");
-  parts.push(renderMemoryMetadata(blocks));
 
   return parts.join("\n");
 }

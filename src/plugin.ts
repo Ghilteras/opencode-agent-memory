@@ -58,10 +58,11 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
       const xml = renderMemoryBlocks(blocks);
       if (!xml) return;
 
-      // Insert early (right after provider header) for salience.
-      // OpenCode will re-join system chunks to preserve caching.
-      const insertAt = output.system.length > 0 ? 1 : 0;
-      output.system.splice(insertAt, 0, xml);
+      // Append memory blocks at the END of the system prompt (stable tail).
+      // On opencode 1.18.x the hook receives a 1-element array, so splice(1) and push are byte-identical;
+      // push is correct under both current and future (V2 runner) array shapes and keeps the static
+      // provider/instructions prefix cacheable.
+      output.system.push(xml);
 
       // Append journal instructions at the end (preserves memory block cache)
       if (journalSystemNote) {

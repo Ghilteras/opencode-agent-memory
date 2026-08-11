@@ -1,5 +1,13 @@
 # opencode-agent-memory
 
+> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.3.0 of
+> [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory)
+> (joshuadavidthomas, MIT). This release adopts the "proper timestamps without cache
+> busting" design (per-block `modified_at` frontmatter, remove the volatile
+> `memory_metadata` block, append memory XML at the end of the system prompt) derived
+> from the Annakan/draxxris fork plan. Upstream PR #20 (freeze metadata timestamps) is
+> superseded by the stronger per-block design and remains open upstream.
+
 [Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
 
 ## Experimental

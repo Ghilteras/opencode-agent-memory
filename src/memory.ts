@@ -27,6 +27,7 @@ const FrontmatterSchema = z.looseObject({
   description: z.string().optional(),
   limit: z.number().int().positive().optional(),
   read_only: z.boolean().optional(),
+  modified_at: z.string().datetime().optional(),
 });
 
 type ParsedFrontmatter = z.infer<typeof FrontmatterSchema>;
@@ -73,25 +74,29 @@ async function readBlockFile(
     readOnly,
     value: body.trim(),
     filePath,
-    lastModified: stats.mtime,
+    lastModified: fm.modified_at ? new Date(fm.modified_at) : stats.mtime,
   };
 }
 
 async function writeBlockFile(
   filePath: string,
   block: Pick<MemoryBlock, "label" | "description" | "limit" | "readOnly" | "value">,
-): Promise<void> {
+): Promise<Date> {
+  const now = new Date();
   const content = buildFrontmatterDocument(
     {
       label: block.label,
       description: block.description,
       limit: block.limit,
       read_only: block.readOnly,
+      modified_at: now.toISOString(),
     },
     block.value,
   );
 
   await atomicWriteFile(filePath, content);
+
+  return now;
 }
 
 function validateLabel(label: string): string {
@@ -113,8 +118,8 @@ export type MemoryStore = {
     label: string,
     value: string,
     opts?: { description?: string; limit?: number },
-  ): Promise<void>;
-  replaceInBlock(scope: MemoryScope, label: string, oldText: string, newText: string): Promise<void>;
+  ): Promise<Date>;
+  replaceInBlock(scope: MemoryScope, label: string, oldText: string, newText: string): Promise<Date>;
 };
 
 const SEED_BLOCKS: Array<{ scope: MemoryScope; label: string }> = [
@@ -257,7 +262,7 @@ export function createMemoryStore(projectDirectory: string): MemoryStore {
         );
       }
 
-      await writeBlockFile(filePath, {
+      return writeBlockFile(filePath, {
         label: safeLabel,
         description,
         limit,
@@ -283,7 +288,7 @@ export function createMemoryStore(projectDirectory: string): MemoryStore {
         );
       }
 
-      await writeBlockFile(block.filePath, {
+      return writeBlockFile(block.filePath, {
         label: block.label,
         description: block.description,
         limit: block.limit,

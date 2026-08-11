@@ -40,11 +40,11 @@ export function MemorySet(store: MemoryStore) {
     async execute(args) {
       // Default to "project" for mutations (safer default)
       const scope = (args.scope ?? "project") as MemoryScope;
-      await store.setBlock(scope, args.label, args.value, {
+      const ts = await store.setBlock(scope, args.label, args.value, {
         description: args.description,
         limit: args.limit,
       });
-      return `Updated memory block ${scope}:${args.label}.`;
+      return `Updated memory block ${scope}:${args.label} at ${ts.toISOString()}.`;
     },
   });
 }
@@ -61,8 +61,8 @@ export function MemoryReplace(store: MemoryStore) {
     async execute(args) {
       // Default to "project" for mutations (safer default)
       const scope = (args.scope ?? "project") as MemoryScope;
-      await store.replaceInBlock(scope, args.label, args.oldText, args.newText);
-      return `Updated memory block ${scope}:${args.label}.`;
+      const ts = await store.replaceInBlock(scope, args.label, args.oldText, args.newText);
+      return `Updated memory block ${scope}:${args.label} at ${ts.toISOString()}.`;
     },
   });
 }
