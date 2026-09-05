@@ -1,13 +1,13 @@
 # opencode-agent-memory
 
-> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.0 of
+> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.1 of
 > [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory)
 > (joshuadavidthomas, MIT). This release adopts the "proper timestamps without cache
 > busting" design (per-block `modified_at` frontmatter, remove the volatile
 > `memory_metadata` block, append memory XML at the end of the system prompt) derived
 > from the Annakan/draxxris fork plan. Upstream PR #20 (freeze metadata timestamps) is
 > superseded by the stronger per-block design and remains open upstream. v0.4.0 swaps
-> the embedding model to a multilingual one and adds a versioned embedding format.
+> the embedding model to a multilingual one and adds a versioned embedding format. v0.4.1 makes journal search fast (in-memory per-store index, embedding-model warmup at init) and fixes the js-yaml import for ESM runtimes.
 
 [Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
 
@@ -37,7 +37,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["opencode-agent-memory"]
+  "plugin": ["@ghilteras/opencode-agent-memory"]
 }
 ```
 
@@ -47,7 +47,7 @@ Optionally, pin to a specific version for stability:
 
 ```json
 {
-  "plugin": ["opencode-agent-memory@0.2.0"]
+  "plugin": ["@ghilteras/opencode-agent-memory@0.4.1"]
 }
 ```
 
@@ -58,7 +58,7 @@ OpenCode fetches unpinned plugins from npm on each startup; pinned versions are 
 If you want to customize or contribute:
 
 ```bash
-git clone https://github.com/joshuadavidthomas/opencode-agent-memory ~/.config/opencode/opencode-agent-memory
+git clone https://github.com/Ghilteras/opencode-agent-memory ~/.config/opencode/opencode-agent-memory
 mkdir -p ~/.config/opencode/plugin
 ln -sf ~/.config/opencode/opencode-agent-memory/src/plugin.ts ~/.config/opencode/plugin/memory.ts
 ```
@@ -90,6 +90,8 @@ When the journal is enabled, the agent gets 3 additional tools:
 Journal entries are append-only markdown files with YAML frontmatter, stored in `~/.config/opencode/journal/`. Each entry records which project, model, provider, agent, and session it was written from. Semantic search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine.
 
 Embedding files (`.embedding`, written alongside each entry) use a versioned format (`{ v: 2, model, dimension, vector }`) so that stale or mismatched embeddings are detected: if the stored dimension doesn't match the current model, the entry falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
+
+**Search performance (v0.4.1)**: `journal_search` keeps an in-memory index per store instance. Entries are re-read only when their file changed — fingerprinted on both the entry `.md` and its `.embedding` sidecar (mtime + size), so regenerating or deleting a sidecar is picked up on the next search without a restart. The embedding model is warmed up in the background at plugin init when the journal is enabled (respecting `cacheDir`), so the first search after a restart doesn't pay the cold model-load cost.
 
 ### cacheDir Configuration
 
@@ -173,7 +175,7 @@ Also worth exploring: [private-journal-mcp](https://github.com/obra/private-jour
 Contributions are welcome! Here's how to set up for development:
 
 ```bash
-git clone https://github.com/joshuadavidthomas/opencode-agent-memory
+git clone https://github.com/Ghilteras/opencode-agent-memory
 cd opencode-agent-memory
 bun install
 ```
