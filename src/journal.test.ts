@@ -392,6 +392,27 @@ describe("journal store", () => {
     expect(result.total).toBeGreaterThan(0);
   });
 
+  test("title query surfaces long-body entry despite diluted embedding", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({
+      title: "Agent-memory release delivery channel",
+      body: "Unrelated topics include coastal erosion, orbital mechanics, ceramic glazing, " +
+        "database indexing, ancient trade routes, orchard irrigation, keyboard switches, " +
+        "bird migration, public transit planning, and archival paper chemistry. These notes " +
+        "continue across varied subjects so the long body dilutes its mean-pooled embedding. " +
+        "Further unrelated details cover weather instruments, typography, fermentation, " +
+        "geology, woodworking, astronomy, logistics, and museum conservation. The entry is " +
+        "deliberately verbose and semantically unrelated to a fresh exact-title query, while " +
+        "its title remains the searchable anchor for this regression case.",
+    });
+
+    // The deterministic mock embeddings produce an unrelated query vector here;
+    // the title-anchor floor guarantees presence regardless of cosine score.
+    const result = await store.search({ text: "Agent-memory release delivery channel" });
+    expect(result.entries.some((candidate) => candidate.id === entry.id)).toBe(true);
+  });
+
   test("search skips stale-dimension embedding and falls back to text match", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);

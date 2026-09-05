@@ -86,6 +86,13 @@ function embeddingPath(entryPath: string): string {
   return entryPath.replace(/\.md$/, ".embedding");
 }
 
+function titleMatches(queryText: string, title: string): boolean {
+  const q = queryText.trim().toLowerCase();
+  if (!q) return false;
+  const t = title.trim().toLowerCase();
+  return t.includes(q) || q.includes(t);
+}
+
 async function readEntryFile(filePath: string): Promise<JournalEntry> {
   const raw = await fs.readFile(filePath, "utf-8");
   const { frontmatterText, body } = splitFrontmatter(raw);
@@ -410,6 +417,13 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
             // Text search fallback
             const haystack = `${entry.title}\n${entry.body}`.toLowerCase();
             score = haystack.includes(query.text.toLowerCase()) ? 1 : 0;
+          }
+
+          // Title-anchor floor: a query that matches the entry title (either
+          // direction, case-insensitive) must not be diluted below the top
+          // ranks by long-body mean pooling (see 20260905-171239-533).
+          if (titleMatches(query.text, entry.title)) {
+            score = Math.max(score, 0.75);
           }
 
           if (score <= 0) continue;

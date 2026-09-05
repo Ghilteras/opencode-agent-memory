@@ -1,8 +1,8 @@
 # opencode-agent-memory
 
-> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.1 of
+> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.2 of
 > [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory)
-> (joshuadavidthomas, MIT). This release adopts the "proper timestamps without cache
+> (joshuadavidthomas, MIT). v0.4.2 adds a title-anchor floor so title queries are not diluted by long bodies. This release adopts the "proper timestamps without cache
 > busting" design (per-block `modified_at` frontmatter, remove the volatile
 > `memory_metadata` block, append memory XML at the end of the system prompt) derived
 > from the Annakan/draxxris fork plan. Upstream PR #20 (freeze metadata timestamps) is
@@ -91,7 +91,7 @@ Journal entries are append-only markdown files with YAML frontmatter, stored in 
 
 Embedding files (`.embedding`, written alongside each entry) use a versioned format (`{ v: 2, model, dimension, vector }`) so that stale or mismatched embeddings are detected: if the stored dimension doesn't match the current model, the entry falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
 
-**Search performance (v0.4.1)**: `journal_search` keeps an in-memory index per store instance. Entries are re-read only when their file changed — fingerprinted on both the entry `.md` and its `.embedding` sidecar (mtime + size), so regenerating or deleting a sidecar is picked up on the next search without a restart. The embedding model is warmed up in the background at plugin init when the journal is enabled (respecting `cacheDir`), so the first search after a restart doesn't pay the cold model-load cost.
+**Search performance (v0.4.1–v0.4.2)**: `journal_search` keeps an in-memory index per store instance. Entries are re-read only when their file changed — fingerprinted on both the entry `.md` and its `.embedding` sidecar (mtime + size), so regenerating or deleting a sidecar is picked up on the next search without a restart. The embedding model is warmed up in the background at plugin init when the journal is enabled (respecting `cacheDir`), so the first search after a restart doesn't pay the cold model-load cost. Since v0.4.2, a query whose text matches an entry's title (in either direction, case-insensitive) is guaranteed a high score floor (0.75), so title-based pointers remain retrievable even for entries with long bodies.
 
 ### cacheDir Configuration
 
