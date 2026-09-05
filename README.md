@@ -19,6 +19,12 @@ Think of it as AGENTS.md with a harness. OpenCode supports [rules](https://openc
 
 For background on the memory concept, see Letta's docs on [memory](https://docs.letta.com/guides/agents/memory/) and [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/).
 
+## Maintenance & contributions
+
+This repository (`Ghilteras/opencode-agent-memory`, npm `@ghilteras/opencode-agent-memory`) is the **maintained home** of this plugin and its sole upstream. Issues and pull requests belong here.
+
+The historical origin (`joshuadavidthomas/opencode-agent-memory`) is reference-only: it is not a contribution target — do not open PRs, issues, or comments there, including courtesy closings.
+
 ## Features
 
 - **Persistent memory** - Information survives across sessions and context compaction
