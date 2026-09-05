@@ -1,13 +1,6 @@
 # opencode-agent-memory
 
-> **Fork notice**: This is the maintained fork `@ghilteras/opencode-agent-memory` v0.4.2 of
-> [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory)
-> (joshuadavidthomas, MIT). v0.4.2 adds a title-anchor floor so title queries are not diluted by long bodies. This release adopts the "proper timestamps without cache
-> busting" design (per-block `modified_at` frontmatter, remove the volatile
-> `memory_metadata` block, append memory XML at the end of the system prompt) derived
-> from the Annakan/draxxris fork plan. Upstream PR #20 (freeze metadata timestamps) is
-> superseded by the stronger per-block design and remains open upstream. v0.4.0 swaps
-> the embedding model to a multilingual one and adds a versioned embedding format. v0.4.1 makes journal search fast (in-memory per-store index, embedding-model warmup at init) and fixes the js-yaml import for ESM runtimes.
+**agent-memory for OpenCode — maintained by Ghilteras.** Originally based on [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory) by Josh Thomas (MIT).
 
 [Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
 
