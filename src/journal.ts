@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 import { z } from "zod";
 
 import { cosineSimilarity, EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
@@ -122,6 +122,15 @@ type ParsedEmbedding =
   | { vector: number[]; model: string; dimension: number }
   | undefined;
 
+type CachedEntry = {
+  entryMtimeMs: number;
+  entrySize: number;
+  embMtimeMs: number;
+  embSize: number;
+  entry: JournalEntry;
+  embedding: ParsedEmbedding;
+};
+
 async function loadEmbedding(entryPath: string): Promise<ParsedEmbedding> {
   const ePath = embeddingPath(entryPath);
   try {
@@ -196,6 +205,11 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
     configDir ?? path.join(os.homedir(), ".config", "opencode"),
     "journal",
   );
+
+  // Per-store cache: each store instance owns its entries, so stores with
+  // different (including nested or ephemeral) journal directories never
+  // interfere and no foreign keys can accumulate.
+  const entryCache = new Map<string, CachedEntry>();
 
   return {
     async write(entry) {
@@ -288,6 +302,12 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         return { entries: [], total: 0, allTags: [] };
       }
 
+      // Prune cache entries for files that no longer exist
+      const alive = new Set(files.map((f) => path.join(journalDir, f)));
+      for (const key of entryCache.keys()) {
+        if (!alive.has(key)) entryCache.delete(key);
+      }
+
       // If a text query is provided, try semantic search first
       let queryEmbedding: number[] | undefined;
       if (query.text) {
@@ -301,14 +321,46 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       // Collect all tags across every entry (before filtering)
       const tagSet = new Set<string>();
 
-      for (const file of files) {
+      const indexed = await Promise.all(files.map(async (file) => {
         const filePath = path.join(journalDir, file);
-        let entry: JournalEntry;
         try {
-          entry = await readEntryFile(filePath);
+          const ePath = embeddingPath(filePath);
+          const [entryStat, embStat] = await Promise.all([
+            fs.stat(filePath),
+            fs.stat(ePath).catch(() => ({ mtimeMs: -1, size: -1 } as const)),
+          ]);
+          const cached = entryCache.get(filePath);
+          if (
+            cached &&
+            cached.entryMtimeMs === entryStat.mtimeMs &&
+            cached.entrySize === entryStat.size &&
+            cached.embMtimeMs === embStat.mtimeMs &&
+            cached.embSize === embStat.size
+          ) {
+            return cached;
+          }
+          const [entry, embedding] = await Promise.all([
+            readEntryFile(filePath),
+            loadEmbedding(filePath),
+          ]);
+          const value: CachedEntry = {
+            entryMtimeMs: entryStat.mtimeMs,
+            entrySize: entryStat.size,
+            embMtimeMs: embStat.mtimeMs,
+            embSize: embStat.size,
+            entry,
+            embedding,
+          };
+          entryCache.set(filePath, value);
+          return value;
         } catch {
-          continue;
+          return undefined;
         }
+      }));
+
+      for (const cached of indexed) {
+        if (!cached) continue;
+        const { entry } = cached;
 
         // Collect tags before applying filters
         for (const tag of entry.tags) {
@@ -333,7 +385,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         if (query.text) {
           if (queryEmbedding) {
             // Semantic search
-            const storedEmbedding = await loadEmbedding(filePath);
+            const storedEmbedding = cached.embedding;
             if (storedEmbedding) {
               // Hard gate: dimension must match, or the embedding is stale
               // (different model) and cannot be compared with cosine.

@@ -16,6 +16,7 @@ import {
   MemorySet,
 } from "./tools";
 import type { JournalContext } from "./tools";
+import { warmupEmbedder } from "./embeddings";
 
 export const MemoryPlugin: Plugin = async ({ directory }) => {
   const store = createMemoryStore(directory);
@@ -37,6 +38,9 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
 
   if (journalEnabled) {
     const journalStore = createJournalStore(undefined, config.cacheDir);
+    // Warmup the embedder in the background; pass configured cacheDir so the
+    // first-init-wins singleton caches to the correct directory.
+    void warmupEmbedder(config.cacheDir).catch(() => {});
     journalTools = {
       journal_write: JournalWrite(journalStore, journalCtx),
       journal_read: JournalRead(journalStore),

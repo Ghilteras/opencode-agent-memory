@@ -401,6 +401,9 @@ describe("journal store", () => {
       body: "unique-stale-dim-content",
     });
 
+    // First search: caches the entry with the correct mock embedding.
+    await store.search({ text: "unique-stale-dim-content" });
+
     // Simulate a v2 embedding with a WRONG dimension (e.g. from a 768d model).
     // Search must not throw: it should skip the embedding and fall back to
     // text matching for this entry.
@@ -422,6 +425,64 @@ describe("journal store", () => {
     const titles = result.entries.map((e) => e.title);
     expect(titles).toContain("Stale dims entry");
     // No throw above is the assertion: mismatched dimension degrades to text.
+  });
+
+  test("sidecar rewrite after cache warm is picked up by second search", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Sidecar invalidation",
+      body: "unique-sidecar-invalidation-content",
+    });
+
+    // First search: caches the entry + correct sidecar fingerprint.
+    const r1 = await store.search({ text: "unique-sidecar-invalidation-content" });
+    expect(r1.entries.some((e) => e.title === "Sidecar invalidation")).toBe(true);
+
+    // Rewrite the sidecar with a wrong-dimension embedding (simulating
+    // sidecar regeneration without touching the .md).
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.writeFile(
+      embeddingFile,
+      JSON.stringify({
+        v: 2,
+        model: "some-768d-model",
+        dimension: 768,
+        vector: Array.from({ length: 768 }, () => 0.1),
+      }),
+      "utf-8",
+    );
+
+    // Second search must invalidate the cache (sidecar mtime changed) and
+    // pick up the stale-dimension embedding, falling back to text match.
+    const r2 = await store.search({ text: "unique-sidecar-invalidation-content" });
+    expect(r2.entries.some((e) => e.title === "Sidecar invalidation")).toBe(true);
+  });
+
+  test("sidecar deleted between searches falls back to text match", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+
+    const entry = await store.write({
+      title: "Sidecar deleted entry",
+      body: "unique-sidecar-deleted-content",
+    });
+
+    // First search: caches the entry + sidecar fingerprint.
+    const r1 = await store.search({ text: "unique-sidecar-deleted-content" });
+    expect(r1.entries.some((e) => e.title === "Sidecar deleted entry")).toBe(true);
+
+    // Delete the sidecar file.
+    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
+    await fs.unlink(embeddingFile);
+
+    // Second search: cache miss (sidecar gone), falls back to text match
+    // (score 0.5) rather than using the stale cached embedding.
+    const r2 = await store.search({ text: "unique-sidecar-deleted-content" });
+    const found = r2.entries.find((e) => e.title === "Sidecar deleted entry");
+    expect(found).toBeDefined();
+    // Score is 0.5 (text fallback), not a cosine score
   });
 
   test("search skips corrupt v2 embedding (empty vector) without throwing", async () => {

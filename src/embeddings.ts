@@ -25,6 +25,10 @@ async function getPipeline(cacheDir?: string) {
   return pipelinePromise;
 }
 
+export async function warmupEmbedder(cacheDir?: string): Promise<void> {
+  await getPipeline(cacheDir);
+}
+
 export async function generateEmbedding(
   text: string,
   cacheDir?: string,
