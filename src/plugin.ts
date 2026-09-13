@@ -1,5 +1,7 @@
 import type { Plugin, ToolDefinition } from "@opencode-ai/plugin";
 
+import { existsSync } from "node:fs";
+
 import {
   buildJournalSystemNote,
   createJournalStore,
@@ -20,7 +22,12 @@ import { warmupEmbedder } from "./embeddings";
 
 export const MemoryPlugin: Plugin = async ({ directory }) => {
   const store = createMemoryStore(directory);
-  await store.ensureSeed();
+  // Only seed into a directory that still exists. OpenCode walks a persisted instance list
+  // at startup and bootstraps every entry; because ensureSeed() creates
+  // <directory>/.opencode/memory recursively, a stale entry made this plugin re-create
+  // directories the operator had deliberately deleted. A missing directory means the
+  // instance is gone, not new, so there is nothing to seed.
+  if (existsSync(directory)) await store.ensureSeed();
 
   // Journal: opt-in via ~/.config/opencode/agent-memory.json
   const config = await loadConfig();

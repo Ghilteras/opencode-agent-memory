@@ -1,7 +1,22 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import * as yaml from "js-yaml";
+
+const fileLocks = new Map<string, Promise<unknown>>();
+
+export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filePath);
+  const prior = fileLocks.get(key) ?? Promise.resolve();
+  const result = prior.then(fn, fn);           // run fn whatever the prior outcome was
+  const settled = result.then(() => undefined, () => undefined);  // never rejects
+  fileLocks.set(key, settled);
+  settled.then(() => {
+    if (fileLocks.get(key) === settled) fileLocks.delete(key);
+  });
+  return result;
+}
 
 export function splitFrontmatter(text: string): {
   frontmatterText: string | undefined;
@@ -40,8 +55,13 @@ export async function atomicWriteFile(
 ): Promise<void> {
   const tempPath = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.tmp`,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  await fs.writeFile(tempPath, content, "utf-8");
-  await fs.rename(tempPath, filePath);
+  try {
+    await fs.writeFile(tempPath, content, "utf-8");
+    await fs.rename(tempPath, filePath);
+  } catch (err) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw err;
+  }
 }

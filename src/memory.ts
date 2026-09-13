@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as yaml from "js-yaml";
 import { z } from "zod";
 
-import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./frontmatter";
+import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter, withFileLock } from "./frontmatter";
 import { getDefaultDescription } from "./letta";
 
 export type MemoryScope = "global" | "project";
@@ -247,53 +247,61 @@ export function createMemoryStore(projectDirectory: string): MemoryStore {
       await fs.mkdir(dir, { recursive: true });
 
       const filePath = path.join(dir, `${safeLabel}.md`);
-      const existing = (await exists(filePath)) ? await readBlockFile(scope, filePath) : undefined;
 
-      if (existing?.readOnly) {
-        throw new Error(`Memory block is read-only: ${scope}:${safeLabel}`);
-      }
+      return withFileLock(filePath, async () => {
+        const existing = (await exists(filePath)) ? await readBlockFile(scope, filePath) : undefined;
 
-      const description = (opts?.description ?? existing?.description ?? "").trim();
-      const limit = opts?.limit ?? existing?.limit ?? 5000;
+        if (existing?.readOnly) {
+          throw new Error(`Memory block is read-only: ${scope}:${safeLabel}`);
+        }
 
-      if (value.length > limit) {
-        throw new Error(
-          `Value too large for ${scope}:${safeLabel} (chars=${value.length}, limit=${limit}).`,
-        );
-      }
+        const description = (opts?.description ?? existing?.description ?? "").trim();
+        const limit = opts?.limit ?? existing?.limit ?? 5000;
 
-      return writeBlockFile(filePath, {
-        label: safeLabel,
-        description,
-        limit,
-        readOnly: existing?.readOnly ?? false,
-        value,
+        if (value.length > limit) {
+          throw new Error(
+            `Value too large for ${scope}:${safeLabel} (chars=${value.length}, limit=${limit}).`,
+          );
+        }
+
+        return writeBlockFile(filePath, {
+          label: safeLabel,
+          description,
+          limit,
+          readOnly: existing?.readOnly ?? false,
+          value,
+        });
       });
     },
 
     async replaceInBlock(scope, label, oldText, newText) {
-      const block = await this.getBlock(scope, label);
-      if (block.readOnly) {
-        throw new Error(`Memory block is read-only: ${scope}:${block.label}`);
-      }
+      const safeLabel = validateLabel(label);
+      const filePath = path.join(scopeDir(projectDirectory, scope), `${safeLabel}.md`);
 
-      if (!block.value.includes(oldText)) {
-        throw new Error(`Old text not found in ${scope}:${block.label}.`);
-      }
+      return withFileLock(filePath, async () => {
+        const block = await this.getBlock(scope, label);
+        if (block.readOnly) {
+          throw new Error(`Memory block is read-only: ${scope}:${block.label}`);
+        }
 
-      const next = block.value.replace(oldText, newText);
-      if (next.length > block.limit) {
-        throw new Error(
-          `Value too large for ${scope}:${block.label} after replace (chars=${next.length}, limit=${block.limit}).`,
-        );
-      }
+        if (!block.value.includes(oldText)) {
+          throw new Error(`Old text not found in ${scope}:${block.label}.`);
+        }
 
-      return writeBlockFile(block.filePath, {
-        label: block.label,
-        description: block.description,
-        limit: block.limit,
-        readOnly: block.readOnly,
-        value: next,
+        const next = block.value.replace(oldText, newText);
+        if (next.length > block.limit) {
+          throw new Error(
+            `Value too large for ${scope}:${block.label} after replace (chars=${next.length}, limit=${block.limit}).`,
+          );
+        }
+
+        return writeBlockFile(block.filePath, {
+          label: block.label,
+          description: block.description,
+          limit: block.limit,
+          readOnly: block.readOnly,
+          value: next,
+        });
       });
     },
   };
