@@ -1,12 +1,12 @@
 # opencode-agent-memory
 
-**agent-memory for OpenCode — maintained by Ghilteras.** Originally based on [opencode-agent-memory](https://github.com/joshuadavidthomas/opencode-agent-memory) by Josh Thomas (MIT).
+**agent-memory for OpenCode — maintained by Ghilteras.** Originally based on the MIT-licensed opencode-agent-memory project by Josh Thomas.
 
 [Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
 
 ## Experimental
 
-This plugin is experimental. The core idea - giving the agent persistent, self-editable memory blocks - is adapted from [Letta](https://github.com/letta-ai/letta). Specifially, the plugin follows Letta's [shared memory blocks](https://docs.letta.com/tutorials/shared-memory-blocks) pattern - the markdown files on disk are shared state that every OpenCode session can read and write.
+This plugin is experimental. The core idea - giving the agent persistent, self-editable memory blocks - is adapted from [Letta](https://github.com/letta-ai/letta). Specifically, the plugin follows Letta's [shared memory blocks](https://docs.letta.com/tutorials/shared-memory-blocks) pattern - the markdown files on disk are shared state that every OpenCode session can read and write.
 
 Think of it as AGENTS.md with a harness. OpenCode supports [rules](https://opencode.ai/docs/rules/) via `AGENTS.md` and custom instruction files - this plugin is similar in spirit, but adds structure (scoped blocks with metadata and size limits), dedicated tools for memory operations, and prompting that encourages the agent to actively maintain its own memory. The content is similar; the scaffolding around it is what's different.
 
@@ -16,7 +16,7 @@ For background on the memory concept, see Letta's docs on [memory](https://docs.
 
 This repository (`Ghilteras/opencode-agent-memory`, npm `@ghilteras/opencode-agent-memory`) is the **maintained home** of this plugin and its sole upstream. Issues and pull requests belong here.
 
-The historical origin (`joshuadavidthomas/opencode-agent-memory`) is reference-only: it is not a contribution target — do not open PRs, issues, or comments there, including courtesy closings.
+The historical origin (`joshuadavidthomas/opencode-agent-memory`) is reference-only and not actively maintained. Issues and pull requests belong here.
 
 ## Features
 
@@ -46,7 +46,7 @@ Optionally, pin to a specific version for stability:
 
 ```json
 {
-  "plugin": ["@ghilteras/opencode-agent-memory@0.4.1"]
+  "plugin": ["@ghilteras/opencode-agent-memory@0.4.3"]
 }
 ```
 
@@ -162,6 +162,14 @@ You can optionally suggest tags to guide the agent's classification:
 ```
 
 Tags are free-form strings - the agent can use any tag, not just the suggested ones. Suggested tags appear in the system prompt to provide guidance.
+
+## Compatibility & Troubleshooting
+
+- **Requires OpenCode v1.0.115+.**
+- **Restart after config changes.** Restart OpenCode after adding or changing the plugin configuration; editing the file alone does not load a new plugin version.
+- **Journal is opt-in.** Enable it explicitly in `agent-memory.json`; it is not active by default.
+- **Local semantic search.** Journal embeddings use a locally cached transformers.js model; semantic-search data is not sent to an external API.
+- **Public install path.** Install or upgrade from the scoped npm package `@ghilteras/opencode-agent-memory`; the maintained source is `https://github.com/Ghilteras/opencode-agent-memory`.
 
 ## Inspiration
 
