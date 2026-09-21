@@ -1,30 +1,26 @@
 # opencode-agent-memory
 
-**agent-memory for OpenCode — maintained by Ghilteras.** Originally based on the MIT-licensed opencode-agent-memory project by Josh Thomas.
+> The maintained public home is
+> [`Ghilteras/opencode-agent-memory`](https://github.com/Ghilteras/opencode-agent-memory);
+> the public npm package is [`@ghilteras/opencode-agent-memory`](https://www.npmjs.com/package/@ghilteras/opencode-agent-memory).
+>
+> Originally created by Joshua David Thomas and licensed under the MIT license. Attribution preserved below; see License section.
 
-[Letta](https://letta.com)-style editable [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/) for [OpenCode](https://opencode.ai).
+A journal-only memory plugin for [OpenCode](https://opencode.ai): an append-only, tagged journal with local semantic search.
 
 ## Experimental
 
-This plugin is experimental. The core idea - giving the agent persistent, self-editable memory blocks - is adapted from [Letta](https://github.com/letta-ai/letta). Specifically, the plugin follows Letta's [shared memory blocks](https://docs.letta.com/tutorials/shared-memory-blocks) pattern - the markdown files on disk are shared state that every OpenCode session can read and write.
+This plugin is experimental. It gives the agent one durable, self-maintained surface: a private journal. Entries are append-only - the agent writes new entries but never edits old ones.
 
-Think of it as AGENTS.md with a harness. OpenCode supports [rules](https://opencode.ai/docs/rules/) via `AGENTS.md` and custom instruction files - this plugin is similar in spirit, but adds structure (scoped blocks with metadata and size limits), dedicated tools for memory operations, and prompting that encourages the agent to actively maintain its own memory. The content is similar; the scaffolding around it is what's different.
-
-For background on the memory concept, see Letta's docs on [memory](https://docs.letta.com/guides/agents/memory/) and [memory blocks](https://docs.letta.com/guides/agents/memory-blocks/).
-
-## Maintenance & contributions
-
-This repository (`Ghilteras/opencode-agent-memory`, npm `@ghilteras/opencode-agent-memory`) is the **maintained home** of this plugin and its sole upstream. Issues and pull requests belong here.
-
-The historical origin (`joshuadavidthomas/opencode-agent-memory`) is reference-only and not actively maintained. Issues and pull requests belong here.
+Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](https://opencode.ai/docs/rules/) via `AGENTS.md` and custom instruction files; those remain the place for eager, always-in-context facts. The journal is for everything else: insights, discoveries, decisions, and observations worth finding later, not carrying every turn.
 
 ## Features
 
-- **Persistent memory** - Information survives across sessions and context compaction
-- **Shared across sessions** - Global blocks shared across all projects, project blocks shared across sessions in that codebase
-- **Self-editing** - The agent can read and modify its own memory with dedicated tools
-- **System prompt injection** - Memory blocks appear in the system prompt, always in-context
-- **Journal** - Append-only entries with semantic search for capturing insights, decisions, and discoveries across sessions
+- **Append-only journal** - Entries survive across sessions and context compaction
+- **Local semantic search** - Find entries by meaning, not just keywords
+- **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
+- **Bounded system prompt note** - A short journal-instructions note is injected while the journal is enabled
+- **No data leaves the machine** - Embeddings run locally
 
 ## Requirements
 
@@ -36,118 +32,62 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["@ghilteras/opencode-agent-memory"]
-}
-```
-
-Restart OpenCode and you're ready to go.
-
-Optionally, pin to a specific version for stability:
-
-```json
-{
-  "plugin": ["@ghilteras/opencode-agent-memory@0.4.3"]
+  "plugin": ["@ghilteras/opencode-agent-memory@0.5.0"]
 }
 ```
 
 OpenCode fetches unpinned plugins from npm on each startup; pinned versions are cached and require a manual version bump to update.
 
-### Local Development
+## Journal
 
-If you want to customize or contribute:
+The journal is **opt-in**. Enable it in `~/.config/opencode/agent-memory.json`:
 
-```bash
-git clone https://github.com/Ghilteras/opencode-agent-memory ~/.config/opencode/opencode-agent-memory
-mkdir -p ~/.config/opencode/plugin
-ln -sf ~/.config/opencode/opencode-agent-memory/src/plugin.ts ~/.config/opencode/plugin/memory.ts
+```json
+{
+  "journal": {
+    "enabled": true
+  }
+}
 ```
 
-## Usage
+With the journal disabled the plugin registers **no tools** and injects nothing.
 
-### Memory Tools
+### Tools
 
-The plugin gives the agent 3 tools for managing memory:
-
-| Tool | Description |
-|------|-------------|
-| `memory_list` | List available memory blocks (labels, descriptions, sizes) |
-| `memory_set` | Create or update a memory block (full overwrite) |
-| `memory_replace` | Replace a substring within a memory block |
-
-You interact with memory by editing the markdown files directly or asking the agent to update its memory.
-
-### Journal Tools
-
-When the journal is enabled, the agent gets 3 additional tools:
+When the journal is enabled, the agent gets 3 tools:
 
 | Tool | Description |
 |------|-------------|
-| `journal_write` | Write a new journal entry with title, body, and optional tags |
+| `journal_write` | Write a new append-only entry (title, body, optional tags) |
 | `journal_search` | Search entries semantically, filter by project or tags, with pagination |
 | `journal_read` | Read a specific journal entry by ID |
 
-Journal entries are append-only markdown files with YAML frontmatter, stored in `~/.config/opencode/journal/`. Each entry records which project, model, provider, agent, and session it was written from. Semantic search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine.
+### Entry format
 
-Embedding files (`.embedding`, written alongside each entry) use a versioned format (`{ v: 2, model, dimension, vector }`) so that stale or mismatched embeddings are detected: if the stored dimension doesn't match the current model, the entry falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
+Entries are markdown files with YAML frontmatter in `~/.config/opencode/journal/`. Each entry records its project, model, provider, agent, session, creation time, and tags, followed by the body:
 
-**Search performance (v0.4.1–v0.4.2)**: `journal_search` keeps an in-memory index per store instance. Entries are re-read only when their file changed — fingerprinted on both the entry `.md` and its `.embedding` sidecar (mtime + size), so regenerating or deleting a sidecar is picked up on the next search without a restart. The embedding model is warmed up in the background at plugin init when the journal is enabled (respecting `cacheDir`), so the first search after a restart doesn't pay the cold model-load cost. Since v0.4.2, a query whose text matches an entry's title (in either direction, case-insensitive) is guaranteed a high score floor (0.75), so title-based pointers remain retrievable even for entries with long bodies.
+```markdown
+---
+title: "Reasoning-pruner wiring"
+created: 2026-09-21T18:16:11.300Z
+project: /home/angelo/homelab-config
+model: deepseek-v4.1-flash
+provider: opencode-go
+agent: executor
+session_id: ses_...
+tags: [plugin, wiring]
+---
 
-### cacheDir Configuration
-
-By default the transformers.js model cache lives in the default location (`~/.cache/huggingface`). You can relocate it by setting `cacheDir` at the top level of `~/.config/opencode/agent-memory.json`:
-
-```json
-{
-  "cacheDir": "/home/angelo/.cache/opencode/memory-model",
-  "journal": {
-    "enabled": true
-  }
-}
+Body text...
 ```
 
-### Default Blocks
+### Semantic search
 
-Three blocks are seeded on first run:
+Search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine. An `.embedding` sidecar is written next to each entry in a versioned format (`{ v: 2, model, dimension, vector }`). The search gate is a **dimension** check: an entry whose recorded `dimension` differs from the plugin's expected dimension is not cosine-compared - it falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
 
-| Block | Scope | Purpose |
-|-------|-------|---------|
-| `persona` | global | How the agent should behave and respond |
-| `human` | global | Details about you (preferences, habits, constraints) |
-| `project` | project | Codebase-specific knowledge (commands, architecture, conventions) |
+### Suggested tags
 
-These are just starting points. Create whatever blocks make sense for your workflow - `debugging-notes`, `api-preferences`, `learned-patterns`, etc.
-
-### Memory Locations
-
-- **Global blocks**: `~/.config/opencode/memory/*.md`
-- **Project blocks**: `.opencode/memory/*.md` (auto-gitignored)
-
-### Block Format
-
-Each block is a markdown file with YAML frontmatter:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `label` | string | filename | Unique identifier for the block |
-| `description` | string | generic | Tells the agent how to use this block |
-| `limit` | integer | 5000 | Maximum characters allowed |
-| `read_only` | boolean | false | Prevent agent from modifying |
-
-All fields have defaults for graceful degradation, but `description` is essential - without it, the agent gets a generic fallback and won't know how to use the block effectively. See Letta's docs on [the importance of the description field](https://docs.letta.com/guides/agents/memory-blocks/#the-importance-of-the-description-field).
-
-### Journal Configuration
-
-The journal is opt-in. Enable it in `~/.config/opencode/agent-memory.json`:
-
-```json
-{
-  "journal": {
-    "enabled": true
-  }
-}
-```
-
-You can optionally suggest tags to guide the agent's classification:
+Tags are free-form strings - the agent can use any tag, not just the suggested ones. You can suggest tags to guide its classification:
 
 ```json
 {
@@ -161,42 +101,41 @@ You can optionally suggest tags to guide the agent's classification:
 }
 ```
 
-Tags are free-form strings - the agent can use any tag, not just the suggested ones. Suggested tags appear in the system prompt to provide guidance.
+Suggested tags appear in the system prompt as guidance.
+
+### cacheDir
+
+By default the transformers.js model cache lives in the default location (`~/.cache/huggingface`). Relocate it with `cacheDir` at the top level of `~/.config/opencode/agent-memory.json`:
+
+```json
+{
+  "cacheDir": "/home/angelo/.cache/opencode/memory-model",
+  "journal": {
+    "enabled": true
+  }
+}
+```
+
+## Upgrading from 0.4.x
+
+Memory blocks and their tools (`memory_list`, `memory_set`, `memory_replace`) are **removed**. Blocks are no longer read, written, or injected into the system prompt; the plugin ships only the journal.
+
+Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **not deleted** by the upgrade, but they are no longer read or written. Move anything still needed to `MEMORY.md` / `AGENTS.md` / `TOOLS.md`, or record it as a journal entry.
 
 ## Compatibility & Troubleshooting
 
 - **Requires OpenCode v1.0.115+.**
-- **Restart after config changes.** Restart OpenCode after adding or changing the plugin configuration; editing the file alone does not load a new plugin version.
-- **Journal is opt-in.** Enable it explicitly in `agent-memory.json`; it is not active by default.
-- **Local semantic search.** Journal embeddings use a locally cached transformers.js model; semantic-search data is not sent to an external API.
-- **Public install path.** Install or upgrade from the scoped npm package `@ghilteras/opencode-agent-memory`; the maintained source is `https://github.com/Ghilteras/opencode-agent-memory`.
+- **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
+- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; with it disabled the plugin registers no tools and injects nothing.
+- **Local embeddings, no data leaves the machine.** Semantic search uses a locally cached transformers.js model; no external API calls are made for search or embedding.
 
 ## Inspiration
 
-The memory architecture and philosophical framing are adapted from [Letta](https://github.com/letta-ai/letta) (formerly MemGPT), a framework for building LLM agents with editable long-term memory.
-
-Also worth exploring: [private-journal-mcp](https://github.com/obra/private-journal-mcp) by Jesse Vincent, which gives Claude a private journaling capability to process feelings and thoughts. His [blog post](https://blog.fsck.com/2025/05/28/dear-diary-the-user-asked-me-if-im-alive/) about it explores similar territory around AI self-reflection and persistent inner experience.
-
-## Contributing
-
-Contributions are welcome! Here's how to set up for development:
-
-```bash
-git clone https://github.com/Ghilteras/opencode-agent-memory
-cd opencode-agent-memory
-bun install
-```
-
-Then symlink the plugin to your OpenCode config:
-
-```bash
-mkdir -p ~/.config/opencode/plugin
-ln -sf "$(pwd)/src/plugin.ts" ~/.config/opencode/plugin/memory.ts
-```
+The journal concept is inspired by [private-journal-mcp](https://github.com/obra/private-journal-mcp) by Jesse Vincent.
 
 ## License
 
-opencode-agent-memory is licensed under the MIT license. See the [`LICENSE`](LICENSE) file for more information.
+Originally created by Joshua David Thomas and licensed under the MIT license. Maintained by Angelo Pantano. See the [`LICENSE`](LICENSE) file for full terms.
 
 ---
 
