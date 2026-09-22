@@ -1,7 +1,6 @@
 import type { Plugin, ToolDefinition } from "@opencode-ai/plugin";
 
 import {
-  buildJournalSystemNote,
   createJournalStore,
   loadConfig,
 } from "./journal";
@@ -26,7 +25,6 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
   };
 
   let journalTools: Record<string, ToolDefinition> = {};
-  let journalSystemNote = "";
 
   if (journalEnabled) {
     const journalStore = createJournalStore(undefined, config.cacheDir);
@@ -34,11 +32,10 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
     // first-init-wins singleton caches to the correct directory.
     void warmupEmbedder(config.cacheDir).catch(() => {});
     journalTools = {
-      journal_write: JournalWrite(journalStore, journalCtx),
+      journal_write: JournalWrite(journalStore, journalCtx, config.journal?.tags),
       journal_read: JournalRead(journalStore),
       journal_search: JournalSearch(journalStore),
     };
-    journalSystemNote = buildJournalSystemNote(config.journal?.tags);
   }
 
   return {
@@ -46,16 +43,6 @@ export const MemoryPlugin: Plugin = async ({ directory }) => {
       if (input.model) {
         journalCtx.model = input.model.modelID;
         journalCtx.provider = input.model.providerID;
-      }
-    },
-
-    "experimental.chat.system.transform": async (_input, output) => {
-      // Inject journal instructions unconditionally when enabled.
-      // Previous versions returned early when no memory blocks were present,
-      // which also skipped the journal note — a regression-class bug that
-      // silently disabled the journal entirely once blocks were removed.
-      if (journalSystemNote) {
-        output.system.push(journalSystemNote);
       }
     },
 

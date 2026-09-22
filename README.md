@@ -19,7 +19,7 @@ Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](ht
 - **Append-only journal** - Entries survive across sessions and context compaction
 - **Local semantic search** - Find entries by meaning, not just keywords
 - **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
-- **Bounded system prompt note** - A short journal-instructions note is injected while the journal is enabled
+- **Guidance in tool descriptions** - Journal usage guidance lives in the descriptions of the journal tools, so an agent sees it only when it is allowed to call them
 - **No data leaves the machine** - Embeddings run locally
 
 ## Requirements
@@ -50,7 +50,7 @@ The journal is **opt-in**. Enable it in `~/.config/opencode/agent-memory.json`:
 }
 ```
 
-With the journal disabled the plugin registers **no tools** and injects nothing.
+With the journal disabled the plugin registers **no tools**.
 
 ### Tools
 
@@ -101,7 +101,7 @@ Tags are free-form strings - the agent can use any tag, not just the suggested o
 }
 ```
 
-Suggested tags appear in the system prompt as guidance.
+Suggested tag **names** (not their descriptions) appear in the `journal_write` tool description as guidance.
 
 ### cacheDir
 
@@ -126,8 +126,9 @@ Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **
 
 - **Requires OpenCode v1.0.115+.**
 - **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
-- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; with it disabled the plugin registers no tools and injects nothing.
+- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; with it disabled the plugin registers no tools.
 - **Local embeddings, no data leaves the machine.** Semantic search uses a locally cached transformers.js model; no external API calls are made for search or embedding.
+- **Known limitation (0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.
 
 ## Inspiration
 

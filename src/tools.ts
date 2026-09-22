@@ -1,6 +1,6 @@
 import { tool } from "@opencode-ai/plugin";
 
-import type { JournalStore } from "./journal";
+import type { JournalStore, JournalTag } from "./journal";
 
 export type JournalContext = {
   directory: string;
@@ -11,12 +11,19 @@ export type JournalContext = {
 export function JournalWrite(
   store: JournalStore,
   ctx: JournalContext,
+  tags?: readonly JournalTag[],
 ) {
+  const suggestedTags =
+    tags && tags.length > 0
+      ? ` Suggested tags: ${tags.map((t) => t.name).join(", ")}.`
+      : "";
   return tool({
     description:
-      "Write a new journal entry. Use this to capture insights, technical discoveries, " +
-      "design decisions, observations, or reflections. Entries are append-only and cannot be edited. " +
-      "Tags are optional comma-separated names, e.g. \"perf, debugging\".",
+      "Write a new append-only journal entry. Use this to capture insights, technical discoveries, " +
+      "design decisions, observations, or reflections. " +
+      "Entries are append-only: you write new entries but never edit old ones. " +
+      "Tags are optional comma-separated names, e.g. \"perf, debugging\"." +
+      suggestedTags,
     args: {
       title: tool.schema.string(),
       body: tool.schema.string(),
@@ -82,7 +89,9 @@ export function JournalSearch(store: JournalStore) {
     description:
       "Search journal entries using semantic similarity. Returns matching entries " +
       "sorted by relevance. All filters are optional and combined with AND logic. " +
-      "Use with no arguments to list recent entries. Use offset to paginate.",
+      "Use with no arguments to list recent entries. Use offset to paginate. " +
+      "Before starting complex tasks, search the journal for relevant past context. " +
+      "The journal is global across all projects but each entry records which project it was written from.",
     args: {
       text: tool.schema.string().optional(),
       project: tool.schema.string().optional(),
