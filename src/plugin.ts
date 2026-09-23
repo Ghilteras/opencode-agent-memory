@@ -14,8 +14,16 @@ import { warmupEmbedder } from "./embeddings";
 
 export const MemoryPlugin: Plugin = async ({ directory }) => {
   // Journal: opt-in via ~/.config/opencode/agent-memory.json
-  const config = await loadConfig();
-  const journalEnabled = config.journal?.enabled === true;
+  const loadedConfig = await loadConfig();
+  const { config } = loadedConfig;
+
+  if (loadedConfig.status !== "ok") {
+    console.warn(
+      `[agent-memory] journal config ${loadedConfig.configPath}: ${loadedConfig.reason ?? loadedConfig.status}; journal tools will NOT be registered`,
+    );
+  }
+
+  const journalEnabled = loadedConfig.status === "ok" && config.journal?.enabled === true;
 
   // Mutable state updated by chat.message hook
   const journalCtx: JournalContext = {

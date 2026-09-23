@@ -25,19 +25,72 @@ const ConfigSchema = z.looseObject({
 
 export type AgentMemoryConfig = z.infer<typeof ConfigSchema>;
 
+export type ConfigLoadStatus =
+  | "ok"
+  | "missing"
+  | "unreadable"
+  | "malformed"
+  | "invalid";
+
+export type LoadedConfig = {
+  config: AgentMemoryConfig;
+  status: ConfigLoadStatus;
+  configPath: string;
+  reason?: string;
+};
+
 export async function loadConfig(
   configDir?: string,
-): Promise<AgentMemoryConfig> {
+): Promise<LoadedConfig> {
   const dir = configDir ?? path.join(os.homedir(), ".config", "opencode");
-  const configPath = path.join(dir, "agent-memory.json");
+  const configPath = path.resolve(dir, "agent-memory.json");
+
+  let raw: string;
   try {
-    const raw = await fs.readFile(configPath, "utf-8");
-    const parsed = ConfigSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return {};
-    return parsed.data;
-  } catch {
-    return {};
+    raw = await fs.readFile(configPath, "utf-8");
+  } catch (error) {
+    const code = error instanceof Error && "code" in error
+      ? String(error.code)
+      : "unknown error";
+    if (code === "ENOENT") {
+      return {
+        config: {},
+        status: "missing",
+        configPath,
+        reason: "file is missing",
+      };
+    }
+    return {
+      config: {},
+      status: "unreadable",
+      configPath,
+      reason: `read failed (${code})`,
+    };
   }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return {
+      config: {},
+      status: "malformed",
+      configPath,
+      reason: "malformed JSON",
+    };
+  }
+
+  const parsed = ConfigSchema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      config: {},
+      status: "invalid",
+      configPath,
+      reason: "schema validation failed",
+    };
+  }
+
+  return { config: parsed.data, status: "ok", configPath };
 }
 
 export type JournalTag = {
@@ -451,4 +504,3 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
     },
   };
 }
-

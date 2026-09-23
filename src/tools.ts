@@ -8,6 +8,21 @@ export type JournalContext = {
   provider: string;
 };
 
+const MAX_TAGS_TO_LIST = 20;
+
+function formatTagsInUse(allTags: readonly string[]): string {
+  if (allTags.length === 0) {
+    return "";
+  }
+
+  // Retrieved entries already show their own tags, so avoid repeating the
+  // entire global inventory when it grows beyond a useful size.
+  if (allTags.length > MAX_TAGS_TO_LIST) {
+    return `\nTags in use: ${allTags.length} (filter with tags=...)`;
+  }
+  return `\nTags in use: ${allTags.join(", ")}`;
+}
+
 export function JournalWrite(
   store: JournalStore,
   ctx: JournalContext,
@@ -115,20 +130,13 @@ export function JournalSearch(store: JournalStore) {
         offset: args.offset,
       });
 
+      const tagsLine = formatTagsInUse(result.allTags);
       if (result.entries.length === 0) {
-        const tagsLine =
-          result.allTags.length > 0
-            ? `\nTags in use: ${result.allTags.join(", ")}`
-            : "";
         return `No journal entries found.${tagsLine}`;
       }
 
       const offset = args.offset ?? 0;
       const header = `Found ${result.total} entries (showing ${offset + 1}–${offset + result.entries.length}):`;
-      const tagsLine =
-        result.allTags.length > 0
-          ? `\nTags in use: ${result.allTags.join(", ")}`
-          : "";
 
       const lines = result.entries.map((e) => {
         const tagStr =

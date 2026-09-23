@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["@ghilteras/opencode-agent-memory@0.5.0"]
+  "plugin": ["@ghilteras/opencode-agent-memory@0.5.2"]
 }
 ```
 
@@ -50,7 +50,10 @@ The journal is **opt-in**. Enable it in `~/.config/opencode/agent-memory.json`:
 }
 ```
 
-With the journal disabled the plugin registers **no tools**.
+The plugin does **not** regenerate `agent-memory.json` if it is deleted; its loss otherwise silently disables the journal, which is why the fault warning exists.
+
+- Intentional disable (`"enabled": false`) is silent by design and registers **no tools**.
+- A missing, unreadable, malformed, or schema-invalid config logs `[agent-memory] journal config <resolved path>: <reason>; journal tools will NOT be registered` and registers **no tools**.
 
 ### Tools
 
@@ -126,9 +129,9 @@ Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **
 
 - **Requires OpenCode v1.0.115+.**
 - **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
-- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; with it disabled the plugin registers no tools.
+- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; intentional disablement is silent, while a missing, unreadable, malformed, or schema-invalid config logs a warning and registers no tools.
 - **Local embeddings, no data leaves the machine.** Semantic search uses a locally cached transformers.js model; no external API calls are made for search or embedding.
-- **Known limitation (0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.
+- **Known limitation (since 0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.
 
 ## Inspiration
 

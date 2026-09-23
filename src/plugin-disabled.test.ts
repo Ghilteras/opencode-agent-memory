@@ -3,7 +3,9 @@ import { describe, expect, mock, test } from "bun:test";
 // Mock journal module with journal DISABLED — the control path.
 mock.module("./journal", () => ({
   loadConfig: async () => ({
-    journal: { enabled: false },
+    config: { journal: { enabled: false } },
+    status: "ok",
+    configPath: "/tmp/test-plugin-disabled/agent-memory.json",
   }),
   createJournalStore: () => ({}),
 }));
@@ -49,5 +51,20 @@ describe("plugin disabled path", () => {
     // still be present even when journal is disabled.
     expect(plugin["chat.message"]).toBeDefined();
     expect(typeof plugin["chat.message"]).toBe("function");
+  });
+
+  test("does not warn for an intentional disabled configuration", async () => {
+    const originalWarn = console.warn;
+    let warningCount = 0;
+    console.warn = () => {
+      warningCount += 1;
+    };
+
+    try {
+      await MemoryPlugin(stubInput);
+      expect(warningCount).toBe(0);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

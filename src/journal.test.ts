@@ -41,27 +41,60 @@ async function mkTmpDir(): Promise<string> {
 }
 
 describe("loadConfig", () => {
-  test("returns empty config when file does not exist", async () => {
+  test("classifies a missing file and returns an empty config", async () => {
     const dir = await mkTmpDir();
-    const config = await loadConfig(dir);
-    expect(config).toEqual({});
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("missing");
+    expect(loaded.config).toEqual({});
   });
 
-  test("returns parsed config when file is valid", async () => {
+  test("classifies an unreadable file and returns an empty config", async () => {
+    const dir = await mkTmpDir();
+    await fs.mkdir(path.join(dir, "agent-memory.json"));
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("unreadable");
+    expect(loaded.config).toEqual({});
+  });
+
+  test("classifies malformed JSON and returns an empty config", async () => {
+    const dir = await mkTmpDir();
+    await fs.writeFile(path.join(dir, "agent-memory.json"), "not json{{{");
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("malformed");
+    expect(loaded.config).toEqual({});
+  });
+
+  test("classifies schema-invalid JSON and returns an empty config", async () => {
+    const dir = await mkTmpDir();
+    await fs.writeFile(
+      path.join(dir, "agent-memory.json"),
+      JSON.stringify({ journal: { enabled: "yes" } }),
+    );
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("invalid");
+    expect(loaded.config).toEqual({});
+  });
+
+  test("classifies valid disabled config without changing it", async () => {
+    const dir = await mkTmpDir();
+    await fs.writeFile(
+      path.join(dir, "agent-memory.json"),
+      JSON.stringify({ journal: { enabled: false } }),
+    );
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("ok");
+    expect(loaded.config).toEqual({ journal: { enabled: false } });
+  });
+
+  test("classifies valid enabled config without changing it", async () => {
     const dir = await mkTmpDir();
     await fs.writeFile(
       path.join(dir, "agent-memory.json"),
       JSON.stringify({ journal: { enabled: true } }),
     );
-    const config = await loadConfig(dir);
-    expect(config.journal?.enabled).toBe(true);
-  });
-
-  test("returns empty config when file has invalid JSON", async () => {
-    const dir = await mkTmpDir();
-    await fs.writeFile(path.join(dir, "agent-memory.json"), "not json{{{");
-    const config = await loadConfig(dir);
-    expect(config).toEqual({});
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("ok");
+    expect(loaded.config).toEqual({ journal: { enabled: true } });
   });
 
   test("returns custom tags from config", async () => {
@@ -78,21 +111,11 @@ describe("loadConfig", () => {
         },
       }),
     );
-    const config = await loadConfig(dir);
-    expect(config.journal?.tags).toEqual([
+    const loaded = await loadConfig(dir);
+    expect(loaded.config.journal?.tags).toEqual([
       { name: "perf", description: "Performance optimization work" },
       { name: "debug", description: "Debugging sessions" },
     ]);
-  });
-
-  test("returns empty config when schema validation fails", async () => {
-    const dir = await mkTmpDir();
-    await fs.writeFile(
-      path.join(dir, "agent-memory.json"),
-      JSON.stringify({ journal: { enabled: "yes" } }),
-    );
-    const config = await loadConfig(dir);
-    expect(config).toEqual({});
   });
 });
 

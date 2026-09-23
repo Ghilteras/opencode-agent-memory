@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import { JournalRead, JournalSearch, JournalWrite } from "./tools";
 import type { JournalContext } from "./tools";
-import type { JournalStore, JournalTag } from "./journal";
+import type { JournalEntry, JournalStore } from "./journal";
 
-// Minimal mock store — tests only check description strings, not execute.
+// Minimal mock store — description tests use the default stubs, while search
+// output tests replace search with deterministic fixtures.
 const mockStore: JournalStore = {
   write: async () => {
     throw new Error("not implemented");
@@ -37,6 +38,31 @@ const WRITE_DESC_WITH_TAGS = JournalWrite(mockStore, mockCtx, [
 const READ_DESC = JournalRead(mockStore).description;
 const SEARCH_TOOL = JournalSearch(mockStore);
 const SEARCH_DESC = SEARCH_TOOL.description;
+
+function makeEntry(tags: string[]): JournalEntry {
+  return {
+    id: "20260101-000000-000",
+    title: "Retrieved entry",
+    project: "/tmp/test",
+    model: "test-model",
+    provider: "test-provider",
+    agent: "test-agent",
+    sessionId: "test-session",
+    created: new Date("2026-01-01T00:00:00.000Z"),
+    tags,
+    body: "Entry body",
+    filePath: "/tmp/test-entry.md",
+  };
+}
+
+async function executeSearch(result: Awaited<ReturnType<JournalStore["search"]>>): Promise<string> {
+  const store: JournalStore = {
+    ...mockStore,
+    search: async () => result,
+  };
+  const output = await JournalSearch(store).execute!({}, {} as never);
+  return String(output);
+}
 
 describe("journal_write description", () => {
   test("mentions append-only semantics", () => {
@@ -127,6 +153,66 @@ describe("journal_search description", () => {
 
   test("contains no dynamic or timestamped content", () => {
     expect(SEARCH_DESC).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe("journal_search tag inventory output", () => {
+  const manyTags = Array.from({ length: 21 }, (_, index) => `tag-${index + 1}`);
+  const exactlyTwentyTags = Array.from({ length: 20 }, (_, index) => `tag-${index + 1}`);
+
+  test("bounds large tag inventories while reporting their count", async () => {
+    const output = await executeSearch({
+      entries: [makeEntry(["entry-tag"])],
+      total: 1,
+      allTags: manyTags,
+    });
+
+    expect(output.split("\n")[1]).toBe("Tags in use: 21 (filter with tags=...)");
+    expect(output).not.toContain("tag-1");
+    expect(output).not.toContain("tag-21");
+  });
+
+  test("lists small tag inventories", async () => {
+    const output = await executeSearch({
+      entries: [makeEntry(["entry-tag"])],
+      total: 1,
+      allTags: ["perf", "debug"],
+    });
+
+    expect(output).toContain("Tags in use: perf, debug");
+  });
+
+  test("lists exactly 20 tags at the boundary", async () => {
+    const output = await executeSearch({
+      entries: [makeEntry(["entry-tag"])],
+      total: 1,
+      allTags: exactlyTwentyTags,
+    });
+
+    expect(output.split("\n")[1]).toBe(`Tags in use: ${exactlyTwentyTags.join(", ")}`);
+  });
+
+  test("omits the tag inventory line when no tags exist", async () => {
+    const output = await executeSearch({
+      entries: [],
+      total: 0,
+      allTags: [],
+    });
+
+    expect(output).toBe("No journal entries found.");
+  });
+
+  test("bounds large tag inventories for empty results too", async () => {
+    const output = await executeSearch({
+      entries: [],
+      total: 0,
+      allTags: manyTags,
+    });
+
+    expect(output).toContain("No journal entries found.");
+    expect(output.split("\n")[1]).toBe("Tags in use: 21 (filter with tags=...)");
+    expect(output).not.toContain("tag-1");
+    expect(output).not.toContain("tag-21");
   });
 });
 
