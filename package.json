@@ -1,6 +1,6 @@
 {
   "name": "@ghilteras/opencode-agent-memory",
-  "version": "0.5.2",
+  "version": "1.0.0",
   "description": "Journal-only memory plugin for OpenCode: tagged, searchable, append-only journal with semantic search.",
   "author": "Angelo Pantano <ghilteras@protonmail.com>",
   "license": "MIT",
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "@opencode-ai/plugin": "^1.0.115",
+    "@opencode/plugin": "^2.0.18",
     "js-yaml": "^4.1.0",
     "zod": "^4.1.13"
   },

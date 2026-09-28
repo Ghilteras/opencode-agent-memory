@@ -16,10 +16,10 @@ const TagSchema = z.looseObject({
 const ConfigSchema = z.looseObject({
   cacheDir: z.string().optional(),
   journal: z
-    .looseObject({
+    .object({
       enabled: z.boolean().optional(),
       tags: z.array(TagSchema).optional(),
-    })
+    }).strict()
     .optional(),
 });
 

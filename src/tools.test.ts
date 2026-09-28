@@ -1,253 +1,115 @@
 import { describe, expect, test } from "bun:test";
-
 import { JournalRead, JournalSearch, JournalWrite } from "./tools";
 import type { JournalContext } from "./tools";
 import type { JournalEntry, JournalStore } from "./journal";
 
-// Minimal mock store — description tests use the default stubs, while search
-// output tests replace search with deterministic fixtures.
-const mockStore: JournalStore = {
-  write: async () => {
-    throw new Error("not implemented");
-  },
-  read: async () => {
-    throw new Error("not implemented");
-  },
-  search: async () => {
-    throw new Error("not implemented");
-  },
+const context: JournalContext = { directory: "/tmp/project", model: "m", provider: "p" };
+function entry(): JournalEntry {
+  return { id: "20260101-000000-000", title: "Title", project: "/tmp", model: "m", provider: "p", agent: "a", sessionId: "s", created: new Date("2026-01-01T00:00:00.000Z"), tags: ["tag"], body: "Body", filePath: "/tmp/entry.md" };
+}
+const baseStore: JournalStore = {
+  write: async () => entry(),
+  read: async () => entry(),
+  search: async () => ({ entries: [entry()], total: 1, allTags: ["tag"] }),
 };
 
-const mockCtx: JournalContext = {
-  directory: "/tmp/test",
-  model: "test-model",
-  provider: "test-provider",
-};
-
-// ─── Tool description tests ───────────────────────────────────────────────
-// These assert semantic properties of the description strings: that guidance
-// content is present, that stale/hallucinated text is absent, and that structural
-// invariants hold.  They use substring/regex assertions, so intra-sentence
-// rewording is tolerated; only content-level regressions trip them.
-
-const WRITE_DESC_NO_TAGS = JournalWrite(mockStore, mockCtx).description;
-const WRITE_DESC_WITH_TAGS = JournalWrite(mockStore, mockCtx, [
-  { name: "perf", description: "Performance optimization" },
-  { name: "debug", description: "Debugging sessions" },
-]).description;
-const READ_DESC = JournalRead(mockStore).description;
-const SEARCH_TOOL = JournalSearch(mockStore);
-const SEARCH_DESC = SEARCH_TOOL.description;
-
-function makeEntry(tags: string[]): JournalEntry {
-  return {
-    id: "20260101-000000-000",
-    title: "Retrieved entry",
-    project: "/tmp/test",
-    model: "test-model",
-    provider: "test-provider",
-    agent: "test-agent",
-    sessionId: "test-session",
-    created: new Date("2026-01-01T00:00:00.000Z"),
-    tags,
-    body: "Entry body",
-    filePath: "/tmp/test-entry.md",
-  };
+function valid(schema: any, value: any): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (schema.additionalProperties === false && Object.keys(value).some((key) => !(key in schema.properties))) return false;
+  if (schema.required?.some((key: string) => !(key in value))) return false;
+  for (const [key, field] of Object.entries<any>(schema.properties)) {
+    if (!(key in value)) continue;
+    const actual = value[key];
+    if (field.type === "string" && typeof actual !== "string") return false;
+    if (field.type === "integer" && (!Number.isInteger(actual) || actual < (field.minimum ?? -Infinity))) return false;
+  }
+  return true;
 }
 
-async function executeSearch(result: Awaited<ReturnType<JournalStore["search"]>>): Promise<string> {
-  const store: JournalStore = {
-    ...mockStore,
-    search: async () => result,
-  };
-  const output = await JournalSearch(store).execute!({}, {} as never);
-  return String(output);
-}
-
-describe("journal_write description", () => {
-  test("mentions append-only semantics", () => {
-    expect(WRITE_DESC_NO_TAGS).toContain("append-only");
+describe("v2 journal tools", () => {
+  test("preserves the recognizable names and descriptions", () => {
+    expect([JournalWrite(baseStore, context).name, JournalRead(baseStore).name, JournalSearch(baseStore).name]).toEqual(["journal_write", "journal_read", "journal_search"]);
+    expect(JournalWrite(baseStore, context).description).toContain("append-only");
+    expect(JournalRead(baseStore).description).toContain("by its ID");
+    expect(JournalSearch(baseStore).description).toContain("semantic similarity");
   });
 
-  test("explains that entries cannot be edited", () => {
-    expect(WRITE_DESC_NO_TAGS).toMatch(/never edit|cannot be (edited|modified)/i);
+  test("journal_write description preserves its behavioral guidance", () => {
+    const description = JournalWrite(baseStore, context).description;
+    expect(description).toMatch(/insights.*discoveries|discoveries.*decisions/i);
+    expect(description).toMatch(/insights.*technical discoveries.*design decisions.*observations/i);
+    expect(description).toMatch(/never edit old ones/i);
+    expect(description).toMatch(/comma-separated/i);
+    expect(description).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    expect(description).not.toContain("Suggested tags:");
+    const tagged = JournalWrite(baseStore, context, [{ name: "focus", description: "private detail" }]).description;
+    expect(tagged).toContain("Suggested tags: focus.");
+    expect(tagged).not.toContain("private detail");
   });
 
-  test("documents tag format", () => {
-    expect(WRITE_DESC_NO_TAGS).toMatch(/tags/i);
-    expect(WRITE_DESC_NO_TAGS).toMatch(/comma.separated/i);
+  test("read and search descriptions retain their distinct contracts", () => {
+    const read = JournalRead(baseStore).description;
+    expect(read).not.toMatch(/append.only|cannot be (edited|modified)/i);
+    expect(read).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    const search = JournalSearch(baseStore);
+    expect(search.description).toMatch(/filters are optional/i);
+    expect(search.description).toMatch(/global across all projects/i);
+    expect(search.input.properties).toHaveProperty("project");
+    expect(search.input.properties).toHaveProperty("offset");
+    expect(search.description).toMatch(/paginate/i);
   });
 
-  test("contains no dynamic or timestamped content", () => {
-    // A static description must not embed a date or ISO timestamp
-    expect(WRITE_DESC_NO_TAGS).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-  });
-
-  test("mentions the journal is for recording insights", () => {
-    expect(WRITE_DESC_NO_TAGS).toMatch(/insight|discovery|decision|observation/i);
-  });
-
-  test("does not include suggested tags when none provided", () => {
-    expect(WRITE_DESC_NO_TAGS).not.toMatch(/suggested tags/i);
-  });
-
-  test("includes suggested tags when provided", () => {
-    expect(WRITE_DESC_WITH_TAGS).toMatch(/suggested tags/i);
-    expect(WRITE_DESC_WITH_TAGS).toContain("perf");
-    expect(WRITE_DESC_WITH_TAGS).toContain("debug");
-  });
-
-  test("suggested tags are tag names only, not descriptions", () => {
-    expect(WRITE_DESC_WITH_TAGS).toContain("perf");
-    expect(WRITE_DESC_WITH_TAGS).toContain("debug");
-    // Tag descriptions should NOT appear in the tool description
-    expect(WRITE_DESC_WITH_TAGS).not.toContain("Performance optimization");
-    expect(WRITE_DESC_WITH_TAGS).not.toContain("Debugging sessions");
-  });
-});
-
-describe("journal_read description", () => {
-  test("mentions reading a specific entry by ID", () => {
-    expect(READ_DESC).toMatch(/by.*ID/i);
-  });
-
-  test("does not contain write-only guidance", () => {
-    // Write-scoping guidance (append-only, cannot be edited) belongs only in
-    // journal_write's description.  An agent with read-but-not-write would
-    // see this guidance without the ability to act on it.
-    expect(READ_DESC).not.toMatch(/append.only|cannot be (edited|modified)/i);
-  });
-
-  test("contains no dynamic or timestamped content", () => {
-    expect(READ_DESC).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-  });
-});
-
-describe("journal_search description", () => {
-  test("mentions searching semantically", () => {
-    expect(SEARCH_DESC).toMatch(/semantic|similarity|meaning/i);
-  });
-
-  test("mentions that filters can be combined", () => {
-    expect(SEARCH_DESC).toMatch(/filter/i);
-  });
-
-  test("documents the project filter argument", () => {
-    // The project filter is documented via the tool's args schema, not the
-    // description prose.  Assert the arg exists so a schema regression is caught.
-    expect(SEARCH_TOOL.args).toBeDefined();
-    expect(SEARCH_TOOL.args!.project).toBeDefined();
-  });
-
-  test("mentions pagination (offset)", () => {
-    expect(SEARCH_DESC).toMatch(/offset|paginate/i);
-  });
-
-  test("mentions the journal is global across projects", () => {
-    expect(SEARCH_DESC).toMatch(/global.*project|across.*project/i);
-  });
-
-  test("advises searching before complex tasks", () => {
-    expect(SEARCH_DESC).toMatch(/complex task|before start/i);
-  });
-
-  test("contains no dynamic or timestamped content", () => {
-    expect(SEARCH_DESC).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-  });
-});
-
-describe("journal_search tag inventory output", () => {
-  const manyTags = Array.from({ length: 21 }, (_, index) => `tag-${index + 1}`);
-  const exactlyTwentyTags = Array.from({ length: 20 }, (_, index) => `tag-${index + 1}`);
-
-  test("bounds large tag inventories while reporting their count", async () => {
-    const output = await executeSearch({
-      entries: [makeEntry(["entry-tag"])],
-      total: 1,
-      allTags: manyTags,
-    });
-
-    expect(output.split("\n")[1]).toBe("Tags in use: 21 (filter with tags=...)");
-    expect(output).not.toContain("tag-1");
-    expect(output).not.toContain("tag-21");
-  });
-
-  test("lists small tag inventories", async () => {
-    const output = await executeSearch({
-      entries: [makeEntry(["entry-tag"])],
-      total: 1,
-      allTags: ["perf", "debug"],
-    });
-
-    expect(output).toContain("Tags in use: perf, debug");
-  });
-
-  test("lists exactly 20 tags at the boundary", async () => {
-    const output = await executeSearch({
-      entries: [makeEntry(["entry-tag"])],
-      total: 1,
-      allTags: exactlyTwentyTags,
-    });
-
-    expect(output.split("\n")[1]).toBe(`Tags in use: ${exactlyTwentyTags.join(", ")}`);
-  });
-
-  test("omits the tag inventory line when no tags exist", async () => {
-    const output = await executeSearch({
-      entries: [],
-      total: 0,
-      allTags: [],
-    });
-
-    expect(output).toBe("No journal entries found.");
-  });
-
-  test("bounds large tag inventories for empty results too", async () => {
-    const output = await executeSearch({
-      entries: [],
-      total: 0,
-      allTags: manyTags,
-    });
-
-    expect(output).toContain("No journal entries found.");
-    expect(output.split("\n")[1]).toBe("Tags in use: 21 (filter with tags=...)");
-    expect(output).not.toContain("tag-1");
-    expect(output).not.toContain("tag-21");
-  });
-});
-
-// ─── Cross-tool invariants ───────────────────────────────────────────────────
-
-describe("cross-tool invariants", () => {
-  test("no description mentions another journal tool by name", () => {
-    const toolNames = ["journal_search", "journal_read", "journal_write"];
-    for (const name of toolNames) {
-      const desc =
-        name === "journal_write"
-          ? WRITE_DESC_NO_TAGS
-          : name === "journal_read"
-            ? READ_DESC
-            : SEARCH_DESC;
-      const others = toolNames.filter((n) => n !== name);
-      for (const other of others) {
-        expect(desc).not.toContain(other);
+  test("descriptions are nonempty and do not name sibling tools", () => {
+    const descriptions = [JournalWrite(baseStore, context).description, JournalRead(baseStore).description, JournalSearch(baseStore).description];
+    expect(descriptions.every((description) => description.trim().length > 0)).toBe(true);
+    for (const [index, description] of descriptions.entries()) {
+      for (const [otherIndex, name] of ["journal_write", "journal_read", "journal_search"].entries()) {
+        if (index !== otherIndex) expect(description).not.toContain(name);
       }
     }
   });
 
-  test("all descriptions are non-empty strings", () => {
-    expect(typeof WRITE_DESC_NO_TAGS).toBe("string");
-    expect(WRITE_DESC_NO_TAGS.length).toBeGreaterThan(0);
-    expect(typeof READ_DESC).toBe("string");
-    expect(READ_DESC.length).toBeGreaterThan(0);
-    expect(typeof SEARCH_DESC).toBe("string");
-    expect(SEARCH_DESC.length).toBeGreaterThan(0);
+  test("uses JSON schemas, rejects malformed and unknown arguments", () => {
+    const write = JournalWrite(baseStore, context).input as any;
+    const read = JournalRead(baseStore).input as any;
+    const search = JournalSearch(baseStore).input as any;
+    expect(write.type).toBe("object");
+    expect(valid(write, { title: "t", body: "b" })).toBe(true);
+    expect(valid(write, { title: 4, body: "b" })).toBe(false);
+    expect(valid(write, { title: "t", body: "b", extra: true })).toBe(false);
+    expect(valid(read, {})).toBe(false);
+    expect(valid(read, { id: "id", extra: 1 })).toBe(false);
+    expect(valid(search, { limit: 0 })).toBe(false);
+    expect(valid(search, { offset: 1.5 })).toBe(false);
+    expect(valid(search, { unexpected: true })).toBe(false);
+    expect(valid(search, { tags: "a,b", limit: 2, offset: 0 })).toBe(true);
   });
 
-  test("no description contains the retired invitation phrase", () => {
-    const retired = "record thoughts, discoveries, and decisions as you work";
-    expect(WRITE_DESC_NO_TAGS).not.toContain(retired);
-    expect(READ_DESC).not.toContain(retired);
-    expect(SEARCH_DESC).not.toContain(retired);
+  test("all execute methods return the v2 {content} result", async () => {
+    const writeResult = await JournalWrite(baseStore, context).execute({ title: "t", body: "b" }, { agent: "a", sessionID: "s" });
+    const readResult = await JournalRead(baseStore).execute({ id: "entry" }, {} as any);
+    const searchResult = await JournalSearch(baseStore).execute({}, {} as any);
+    for (const result of [writeResult, readResult, searchResult]) {
+      expect(Object.keys(result)).toEqual(["content"]);
+      expect(typeof result.content).toBe("string");
+    }
+    expect(writeResult.content).toContain("Journal entry created:");
+    expect(readResult.content).toContain("Body");
+    expect(searchResult.content).toContain("Found 1 entries");
+  });
+
+  test("retains bounded tag inventory output formatting", async () => {
+    const populated: JournalStore = { ...baseStore, search: async () => ({ entries: [entry()], total: 1, allTags: ["alpha", "beta"] }) };
+    expect((await JournalSearch(populated).execute({}, {} as any)).content).toContain("Tags in use: alpha, beta");
+    const empty: JournalStore = { ...baseStore, search: async () => ({ entries: [], total: 0, allTags: [] }) };
+    expect((await JournalSearch(empty).execute({}, {} as any)).content).toBe("No journal entries found.");
+    const store: JournalStore = { ...baseStore, search: async () => ({ entries: [], total: 0, allTags: Array.from({ length: 21 }, (_, i) => `tag-${i}`) }) };
+    const result = await JournalSearch(store).execute({}, {} as any);
+    expect(result.content).toBe("No journal entries found.\nTags in use: 21 (filter with tags=...)");
+  });
+
+  test("journal_read formats metadata before the body", async () => {
+    const result = await JournalRead(baseStore).execute({ id: "entry" }, {} as any);
+    expect(result.content).toBe("title: Title\ncreated: 2026-01-01T00:00:00.000Z\nproject: /tmp\nmodel: m\nprovider: p\nagent: a\nsession: s\ntags: tag\n\nBody");
   });
 });

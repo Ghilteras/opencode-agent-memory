@@ -75,6 +75,14 @@ describe("loadConfig", () => {
     expect(loaded.config).toEqual({});
   });
 
+  test("rejects an unrecognized journal key instead of silently enabling", async () => {
+    const dir = await mkTmpDir();
+    await fs.writeFile(path.join(dir, "agent-memory.json"), JSON.stringify({ journal: { enabled_: false } }));
+    const loaded = await loadConfig(dir);
+    expect(loaded.status).toBe("invalid");
+    expect(loaded.config).toEqual({});
+  });
+
   test("classifies valid disabled config without changing it", async () => {
     const dir = await mkTmpDir();
     await fs.writeFile(

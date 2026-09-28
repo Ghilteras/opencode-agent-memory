@@ -24,7 +24,7 @@ Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](ht
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai/) v1.0.115 or later
+- [OpenCode](https://opencode.ai/) **v2** — this version uses the OpenCode v2 plugin API and does **not** run on v1
 
 ## Installation
 
@@ -32,32 +32,33 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["@ghilteras/opencode-agent-memory@0.5.2"]
+  "plugins": ["@ghilteras/opencode-agent-memory@1.0.0"]
 }
 ```
 
-OpenCode fetches unpinned plugins from npm on each startup; pinned versions are cached and require a manual version bump to update.
+Note OpenCode **v2** reads the `plugins` key (v1 used `plugin`). OpenCode fetches unpinned plugins from npm on each startup; pinned versions are cached and require a manual version bump to update.
 
 ## Journal
 
-The journal is **opt-in**. Enable it in `~/.config/opencode/agent-memory.json`:
+The journal is **on by default** — the three tools are registered with no configuration required.
+
+To turn it off, set `enabled: false` in `~/.config/opencode/agent-memory.json`:
 
 ```json
 {
   "journal": {
-    "enabled": true
+    "enabled": false
   }
 }
 ```
 
-The plugin does **not** regenerate `agent-memory.json` if it is deleted; its loss otherwise silently disables the journal, which is why the fault warning exists.
-
-- Intentional disable (`"enabled": false`) is silent by design and registers **no tools**.
-- A missing, unreadable, malformed, or schema-invalid config logs `[agent-memory] journal config <resolved path>: <reason>; journal tools will NOT be registered` and registers **no tools**.
+- An explicit disable (`"enabled": false`) is silent by design and registers **no tools**.
+- A config that exists but is unreadable, malformed, or schema-invalid **fails closed**: it logs `[agent-memory] journal config <resolved path>: <reason>; journal tools will NOT be registered` and registers **no tools**.
+- An **absent** config means the default: the tools register. (This changed in 1.0.0 — an absent config used to disable the journal.)
 
 ### Tools
 
-When the journal is enabled, the agent gets 3 tools:
+The agent gets 3 tools:
 
 | Tool | Description |
 |------|-------------|
@@ -119,6 +120,15 @@ By default the transformers.js model cache lives in the default location (`~/.ca
 }
 ```
 
+## Upgrading to 1.0.0
+
+**This release requires OpenCode v2.** The plugin was ported from the v1 plugin API to the v2 plugin API and will not load on v1. The config key is now `plugins` (v1 used `plugin`).
+
+Two behaviour changes:
+
+- **The journal tools are registered by default.** Previously you had to opt in through `agent-memory.json`; now an absent config means the tools are on, and you turn them off with `"enabled": false`.
+- **Storage is unchanged.** Existing entries under `~/.config/opencode/journal/` and their `.embedding` sidecars stay readable; nothing is migrated or rewritten.
+
 ## Upgrading from 0.4.x
 
 Memory blocks and their tools (`memory_list`, `memory_set`, `memory_replace`) are **removed**. Blocks are no longer read, written, or injected into the system prompt; the plugin ships only the journal.
@@ -127,9 +137,9 @@ Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **
 
 ## Compatibility & Troubleshooting
 
-- **Requires OpenCode v1.0.115+.**
+- **Requires OpenCode v2.** This release uses the OpenCode v2 plugin API and does not run on v1.
 - **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
-- **Journal is opt-in.** You must explicitly enable it in `~/.config/opencode/agent-memory.json`; intentional disablement is silent, while a missing, unreadable, malformed, or schema-invalid config logs a warning and registers no tools.
+- **Journal is on by default.** Turn it off with `"enabled": false`; an explicit disable is silent, while a config that exists but is unreadable, malformed, or schema-invalid logs a warning and registers no tools (fail-closed).
 - **Local embeddings, no data leaves the machine.** Semantic search uses a locally cached transformers.js model; no external API calls are made for search or embedding.
 - **Known limitation (since 0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.
 
