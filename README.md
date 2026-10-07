@@ -156,3 +156,11 @@ Originally created by Joshua David Thomas and licensed under the MIT license. Ma
 opencode-agent-memory is not built by, or affiliated with, the OpenCode team.
 
 OpenCode is ©2025 Anomaly.
+# Journal diagnostics
+
+Run `bun run journal:doctor [config-dir]` to inspect flat journal Markdown files
+and their `.embedding` sidecars without repairing or changing them. The optional
+directory is the OpenCode state/config directory (the journal is read from its
+`journal/` subdirectory); without it, the default is `~/.config/opencode`.
+The command prints a deterministic JSON report and exits 0 for a complete scan
+without errors, 1 for validation errors, or 2 for an incomplete scan/root error.

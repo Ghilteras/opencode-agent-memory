@@ -98,7 +98,7 @@ export type JournalTag = {
   description: string;
 };
 
-const EntryFrontmatterSchema = z.looseObject({
+export const EntryFrontmatterSchema = z.looseObject({
   title: z.string().min(1),
   project: z.string().optional(),
   model: z.string().optional(),

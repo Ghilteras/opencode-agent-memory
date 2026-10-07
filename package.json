@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "journal:doctor": "bun run src/journal-doctor.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
