@@ -17,7 +17,9 @@
     "src"
   ],
   "scripts": {
-    "test": "bun test",
+    "test": "bun run test:core && bun run test:plugin",
+    "test:core": "bun test src/test-suite.test.ts src/doctor.test.ts src/embeddings.test.ts src/tools.test.ts src/journal.test.ts",
+    "test:plugin": "HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HOME=$(mktemp -d) bun test src/plugin.test.ts src/plugin-disabled.test.ts",
     "typecheck": "tsc --noEmit",
     "journal:doctor": "bun run src/journal-doctor.ts"
   },

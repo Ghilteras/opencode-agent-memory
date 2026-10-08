@@ -1,11 +1,13 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as realEmbeddings from "./embeddings";
 
-import { createJournalStore, loadConfig } from "./journal";
-
-// Mock the embeddings module to avoid downloading a real model in tests
+// Mock the embeddings module to avoid downloading a real model in tests.
+// Spread the real module so every export not overridden here keeps its real
+// value regardless of test-file discovery order.
 mock.module("./embeddings", () => ({
+  ...realEmbeddings,
   generateEmbedding: async (text: string) => {
     // Deterministic fake embedding based on text content
     const hash = Array.from(text).reduce(
@@ -39,6 +41,16 @@ mock.module("./embeddings", () => ({
 async function mkTmpDir(): Promise<string> {
   return fs.mkdtemp(path.join("/tmp/", "opencode-journal-"));
 }
+
+// Bind the journal module AFTER the embeddings mock registration (above) via
+// dynamic import, so the store uses the fake embeddings regardless of bun's
+// module-mock rewiring semantics; a static import would be hoisted above it.
+let createJournalStore!: (typeof import("./journal"))["createJournalStore"];
+let loadConfig!: (typeof import("./journal"))["loadConfig"];
+
+beforeAll(async () => {
+  ({ createJournalStore, loadConfig } = await import("./journal"));
+});
 
 describe("loadConfig", () => {
   test("classifies a missing file and returns an empty config", async () => {

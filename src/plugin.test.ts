@@ -1,22 +1,42 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { LoadedConfig, JournalEntry } from "./journal";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as realEmbeddings from "./embeddings";
 
-let loadedConfig: LoadedConfig = { config: {}, status: "missing", configPath: "/tmp/test/agent-memory.json", reason: "file is missing" };
-const writes: Array<Record<string, unknown>> = [];
-mock.module("./journal", () => ({
-  loadConfig: async () => loadedConfig,
-  createJournalStore: () => ({
-    write: async (entry: Record<string, unknown>) => {
-      writes.push(entry);
-      return { id: "id-1", title: entry.title, created: new Date("2026-01-01T00:00:00.000Z") } as JournalEntry;
-    },
-    read: async () => { throw new Error("unused"); },
-    search: async () => ({ entries: [], total: 0, allTags: [] }),
-  }),
+// These tests run in their own bun process (package.json "test:plugin") with
+// HOME pointed at a throwaway fixture directory, so the real loadConfig and
+// createJournalStore exercise real fixture files. Refuse to run against the
+// real home directory. Only the model-loading surface of ./embeddings is
+// stubbed, spreading the real module so other exports keep real values.
+if (process.env.HOME === undefined || !process.env.HOME.startsWith("/tmp/")) {
+  throw new Error("plugin tests require HOME pointed at a /tmp fixture directory; run via `bun run test:plugin`");
+}
+
+const fixtureHome = process.env.HOME;
+const configDir = path.join(fixtureHome, ".config", "opencode");
+const configPath = path.join(configDir, "agent-memory.json");
+const journalDir = path.join(configDir, "journal");
+
+mock.module("./embeddings", () => ({
+  ...realEmbeddings,
+  generateEmbedding: async () => Array.from({ length: 384 }, (_, i) => Math.sin(i) * 0.5),
+  warmupEmbedder: async () => {},
 }));
-mock.module("./embeddings", () => ({ warmupEmbedder: async () => {} }));
 
 import plugin from "./plugin";
+
+// value === undefined creates a DIRECTORY at the config path (unreadable);
+// a string is written raw (malformed JSON); an object is JSON-encoded.
+async function writeConfig(value: unknown): Promise<void> {
+  await fs.mkdir(configDir, { recursive: true });
+  if (value === undefined) {
+    await fs.mkdir(configPath, { recursive: true });
+  } else if (typeof value === "string") {
+    await fs.writeFile(configPath, value, "utf-8");
+  } else {
+    await fs.writeFile(configPath, JSON.stringify(value), "utf-8");
+  }
+}
 
 function harness() {
   const definitions = new Map<string, any>();
@@ -30,37 +50,27 @@ function harness() {
   return { definitions, contextHook: () => contextHook, replay: () => transform!({ add: (definition) => definitions.set(definition.name, definition), list: () => [...definitions.values()] }), start: () => plugin.setup(context) };
 }
 
-afterEach(() => {
-  loadedConfig = { config: {}, status: "missing", configPath: "/tmp/test/agent-memory.json", reason: "file is missing" };
-  writes.length = 0;
+afterEach(async () => {
+  await fs.rm(configDir, { recursive: true, force: true });
 });
 
 describe("v2 plugin registration", () => {
   test("has a stable id and default-registers exactly the three journal tools", async () => {
     expect(plugin.id).toBe("opencode-agent-memory");
+    await fs.rm(configDir, { recursive: true, force: true }); // absent config: default-on journal tools
     const h = harness();
     await h.start();
     expect([...h.definitions.keys()].sort()).toEqual(["journal_read", "journal_search", "journal_write"]);
   });
 
   test("registered write description suggests configured tag names without their descriptions", async () => {
-    loadedConfig = {
-      config: {
-        journal: {
-          tags: [
-            { name: "owner_approved", description: "Use for a choice made and its rationale." },
-            { name: "incident_followup", description: "Use for investigation notes and findings." },
-          ],
-        },
-      },
-      status: "ok",
-      configPath: "/tmp/test/agent-memory.json",
-    };
-
+    await writeConfig({ journal: { tags: [
+      { name: "owner_approved", description: "Use for a choice made and its rationale." },
+      { name: "incident_followup", description: "Use for investigation notes and findings." },
+    ] } });
     const h = harness();
     await h.start();
     const description = h.definitions.get("journal_write").description as string;
-
     expect(description).toContain("Suggested tags: owner_approved, incident_followup.");
     expect(description).not.toContain("Use for a choice made and its rationale.");
     expect(description).not.toContain("Use for investigation notes and findings.");
@@ -73,36 +83,58 @@ describe("v2 plugin registration", () => {
   });
 
   test("explicit false opts out without tools", async () => {
-    loadedConfig = { config: { journal: { enabled: false } }, status: "ok", configPath: "/tmp/test/agent-memory.json" };
+    await writeConfig({ journal: { enabled: false } });
     const h = harness(); await h.start();
     expect([...h.definitions.keys()]).toEqual([]);
   });
 
   test("invalid journal typo fails closed and warns", async () => {
-    loadedConfig = { config: {}, status: "invalid", configPath: "/tmp/test/agent-memory.json", reason: "schema validation failed" };
+    await writeConfig({ journal: { enabled_: false } });
     const warnings: unknown[][] = [];
     const originalWarn = console.warn;
     console.warn = (...args) => warnings.push(args);
     try {
       const h = harness(); await h.start();
       expect([...h.definitions.keys()]).toEqual([]);
-      expect(warnings).toEqual([["[agent-memory] journal config /tmp/test/agent-memory.json: schema validation failed; journal tools will NOT be registered"]]);
+      expect(warnings).toEqual([[`[agent-memory] journal config ${configPath}: schema validation failed; journal tools will NOT be registered`]]);
     } finally { console.warn = originalWarn; }
   });
 
-  for (const status of ["unreadable", "malformed", "invalid"] as const) {
-    test(`fails closed on ${status} config`, async () => {
-      loadedConfig = { config: { journal: { enabled: true } }, status, configPath: "/tmp/test/agent-memory.json", reason: "bad config" };
-      const warnings: unknown[][] = [];
-      const originalWarn = console.warn;
-      console.warn = (...args) => warnings.push(args);
-      try {
-        const h = harness(); await h.start();
-        expect([...h.definitions.keys()]).toEqual([]);
-        expect(warnings).toEqual([["[agent-memory] journal config /tmp/test/agent-memory.json: bad config; journal tools will NOT be registered"]]);
-      } finally { console.warn = originalWarn; }
-    });
-  }
+  test("fails closed on unreadable config", async () => {
+    await writeConfig(undefined);
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const h = harness(); await h.start();
+      expect([...h.definitions.keys()]).toEqual([]);
+      expect(warnings).toEqual([[`[agent-memory] journal config ${configPath}: read failed (EISDIR); journal tools will NOT be registered`]]);
+    } finally { console.warn = originalWarn; }
+  });
+
+  test("fails closed on malformed config", async () => {
+    await writeConfig("not json{{{");
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const h = harness(); await h.start();
+      expect([...h.definitions.keys()]).toEqual([]);
+      expect(warnings).toEqual([[`[agent-memory] journal config ${configPath}: malformed JSON; journal tools will NOT be registered`]]);
+    } finally { console.warn = originalWarn; }
+  });
+
+  test("fails closed on invalid config", async () => {
+    await writeConfig({ journal: { enabled: "yes" } });
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args);
+    try {
+      const h = harness(); await h.start();
+      expect([...h.definitions.keys()]).toEqual([]);
+      expect(warnings).toEqual([[`[agent-memory] journal config ${configPath}: schema validation failed; journal tools will NOT be registered`]]);
+    } finally { console.warn = originalWarn; }
+  });
 
   test("default absent config emits no warning", async () => {
     const warnings: unknown[][] = [];
@@ -119,6 +151,11 @@ describe("v2 plugin registration", () => {
     hook({ sessionID: "session-b", model: { id: "model-b", providerID: "provider-b" } });
     hook({ sessionID: "session-a", model: { id: "model-a2", providerID: "provider-a2" } });
     await h.definitions.get("journal_write").execute({ title: "Title", body: "Body" }, { agent: "agent", sessionID: "session-b" });
-    expect(writes[0]).toMatchObject({ model: "model-b", provider: "provider-b", sessionId: "session-b" });
+    const files = (await fs.readdir(journalDir)).filter((f) => f.endsWith(".md"));
+    expect(files).toHaveLength(1);
+    const text = await fs.readFile(path.join(journalDir, files[0]!), "utf-8");
+    expect(text).toContain("model: model-b");
+    expect(text).toContain("provider: provider-b");
+    expect(text).toContain("session_id: session-b");
   });
 });
