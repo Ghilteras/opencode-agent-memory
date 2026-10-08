@@ -521,8 +521,9 @@ describe("journal store", () => {
       body: "unique-sidecar-deleted-content",
     });
 
-    // First search: caches the entry + sidecar fingerprint.
-    const r1 = await store.search({ text: "unique-sidecar-deleted-content" });
+    // Warm the cache chronologically (loads and caches the sidecar
+    // fingerprint) without depending on a synthetic semantic score.
+    const r1 = await store.search({});
     expect(r1.entries.some((e) => e.title === "Sidecar deleted entry")).toBe(true);
 
     // Delete the sidecar file.
