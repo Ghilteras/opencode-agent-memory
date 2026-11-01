@@ -76,11 +76,11 @@ export function JournalRead(store: JournalStore): ToolDefinition {
 export function JournalSearch(store: JournalStore): ToolDefinition {
   return {
     name: "journal_search",
-    description: "Search journal entries using semantic similarity. Returns matching entries sorted by relevance. All filters are optional and combined with AND logic. Use with no arguments to list recent entries. Use offset to paginate. Before starting complex tasks, search the journal for relevant past context. The journal is global across all projects but each entry records which project it was written from.",
+    description: "Find candidate journal entries by lexical OR matching query words in titles and bodies. Candidates are not relevance claims. All filters are optional and combined with AND logic. Use with no arguments to list recent entries. Use offset to paginate. Before starting complex tasks, search the journal for relevant past context. The journal is global across all projects but each entry records which project it was written from.",
     input: {
       type: "object",
       properties: {
-        text: { type: "string", description: "Semantic search text" },
+        text: { type: "string", description: "Query words for lexical candidate matching in titles and bodies" },
         project: { type: "string", description: "Filter by project directory" },
         tags: { type: "string", description: "Comma-separated tags; all must match" },
         limit: { type: "integer", minimum: 1, description: "Maximum entries to return" },
@@ -99,7 +99,7 @@ export function JournalSearch(store: JournalStore): ToolDefinition {
       const tagsLine = formatTagsInUse(result.allTags);
       if (!result.entries.length) return { content: `No journal entries found.${tagsLine}` };
       const offset = (input.offset as number | undefined) ?? 0;
-      const header = `Found ${result.total} entries (showing ${offset + 1}–${offset + result.entries.length}):`;
+      const header = `Found ${result.total} candidate entries (showing ${offset + 1}–${offset + result.entries.length}):`;
       const lines = result.entries.map((entry) => `${entry.id}\n  ${entry.title}${entry.tags.length ? ` [${entry.tags.join(", ")}]` : ""}\n  ${entry.created.toISOString()}`);
       return { content: `${header}${tagsLine}\n\n${lines.join("\n\n")}` };
     },

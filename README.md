@@ -6,7 +6,7 @@
 >
 > Originally created by Joshua David Thomas and licensed under the MIT license. Attribution preserved below; see License section.
 
-A journal-only memory plugin for [OpenCode](https://opencode.ai): an append-only, tagged journal with local semantic search.
+A journal-only memory plugin for [OpenCode](https://opencode.ai): an append-only, tagged journal with local lexical search.
 
 ## Experimental
 
@@ -17,7 +17,7 @@ Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](ht
 ## Features
 
 - **Append-only journal** - Entries survive across sessions and context compaction
-- **Hybrid local search** - Find entries by meaning and keywords
+- **Local lexical search** - Find candidate entries by matching query words in titles and bodies
 - **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
 - **Guidance in tool descriptions** - Journal usage guidance lives in the descriptions of the journal tools, so an agent sees it only when it is allowed to call them
 - **No data leaves the machine** - Embeddings run locally
@@ -63,7 +63,7 @@ The agent gets 3 tools:
 | Tool | Description |
 |------|-------------|
 | `journal_write` | Write a new append-only entry (title, body, optional tags) |
-| `journal_search` | Search entries by semantic similarity and keywords, filter by project or tags, with pagination |
+| `journal_search` | Find lexical candidates by matching query words in titles and bodies; filter by project or tags, with pagination |
 | `journal_read` | Read a specific journal entry by ID |
 
 ### Entry format
@@ -85,9 +85,9 @@ tags: [plugin, wiring]
 Body text...
 ```
 
-### Semantic search
+### Text search
 
-Search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine. An `.embedding` sidecar is written next to each entry in a versioned format (`{ v: 2, model, dimension, vector }`). A stored vector is compared only when its dimension matches; semantic admission then requires raw cosine similarity of at least 0.45, an internal initial hypothesis rather than a calibrated boundary. Title matches bypass that floor. Exact-substring fallback preserves matches when a sidecar is unusable or query-embedding generation fails. A MiniSearch BM25+ lexical channel independently searches title and body using AND-matched query terms; its ranking is fused with admitted semantic results by reciprocal rank fusion. Legacy bare-array embeddings from v0.3.x remain readable.
+Text search runs one MiniSearch BM25+ pass over title and body. Query terms are OR-matched, with native score order and a deterministic tie-break by creation time and ID. This is keyword matching, not a claim of semantic relevance: results are candidates for the agent to inspect. Matching works across languages by matching literal words, not by meaning. When a query has no tokenizable terms (for example, `!!!`), search falls back to case-insensitive exact-substring matching over title and body. The retained index is reused while the ordered candidate-entry ID list is unchanged, avoiding repeated index construction. Embedding sidecars are still written in the versioned `{ v: 2, model, dimension, vector }` format for compatibility, but search does not read them.
 
 ### Suggested tags
 
@@ -129,6 +129,12 @@ Two behaviour changes:
 - **The journal tools are registered by default.** Previously you had to opt in through `agent-memory.json`; now an absent config means the tools are on, and you turn them off with `"enabled": false`.
 - **Storage is unchanged.** Existing entries under `~/.config/opencode/journal/` and their `.embedding` sidecars stay readable; nothing is migrated or rewritten.
 
+## Upgrading to lexical candidate search
+
+- Text search now ranks entries with lexical OR matching: a candidate may match any query term in its title or body.
+- Results are candidates, not relevance claims. `Found N` reports the candidate count before pagination and will usually be large.
+- A punctuation-only query falls back to case-insensitive substring matching over title and body.
+
 ## Upgrading from 0.4.x
 
 Memory blocks and their tools (`memory_list`, `memory_set`, `memory_replace`) are **removed**. Blocks are no longer read, written, or injected into the system prompt; the plugin ships only the journal.
@@ -140,7 +146,7 @@ Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **
 - **Requires OpenCode v2.** This release uses the OpenCode v2 plugin API and does not run on v1.
 - **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
 - **Journal is on by default.** Turn it off with `"enabled": false`; an explicit disable is silent, while a config that exists but is unreadable, malformed, or schema-invalid logs a warning and registers no tools (fail-closed).
-- **Local embeddings, no data leaves the machine.** Semantic search uses a locally cached transformers.js model; no external API calls are made for search or embedding.
+- **Embedding sidecars remain compatible.** They are written locally for the existing format contract, diagnostics, and future consumers; text search is lexical and does not read embeddings.
 - **Known limitation (since 0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.
 
 ## Inspiration

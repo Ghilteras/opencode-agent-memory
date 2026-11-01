@@ -4,9 +4,7 @@ import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
 import NativeMiniSearch from "minisearch";
 
-let failEmbeddingGeneration = false;
 let embeddingGenerationCalls = 0;
-let embeddingOverride: number[] | undefined;
 let lexicalIndexConstructions = 0;
 
 class CountingMiniSearch extends (NativeMiniSearch as any) {
@@ -23,37 +21,12 @@ mock.module("minisearch", () => ({ default: CountingMiniSearch }));
 // value regardless of test-file discovery order.
 mock.module("./embeddings", () => ({
   ...realEmbeddings,
-  generateEmbedding: async (text: string) => {
+  generateEmbedding: async () => {
     embeddingGenerationCalls++;
-    if (failEmbeddingGeneration) throw new Error("injected embedding failure");
-    if (embeddingOverride) return [...embeddingOverride];
-    // Deterministic fake embedding based on text content
-    const hash = Array.from(text).reduce(
-      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
-      0,
-    );
-    return Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
+    return Array.from({ length: 8 }, (_, i) => i / 8);
   },
   EMBEDDING_DIMENSION: 8,
   embeddingModelName: () => "test-model",
-  cosineSimilarity: (a: number[], b: number[]) => {
-    if (a.length !== b.length)
-      throw new Error(
-        `Embedding dimension mismatch: ${a.length} vs ${b.length}`,
-      );
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      const ai = a[i]!;
-      const bi = b[i]!;
-      dot += ai * bi;
-      normA += ai * ai;
-      normB += bi * bi;
-    }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
-  },
 }));
 
 async function mkTmpDir(): Promise<string> {
@@ -161,9 +134,7 @@ describe("journal store", () => {
   let tmpDir: string;
 
   afterEach(async () => {
-    failEmbeddingGeneration = false;
     embeddingGenerationCalls = 0;
-    embeddingOverride = undefined;
     lexicalIndexConstructions = 0;
     if (tmpDir) {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -437,7 +408,7 @@ describe("journal store", () => {
     expect(result.allTags).toEqual(["debugging", "perf", "rust"]);
   });
 
-  test("search by text uses semantic matching", async () => {
+  test("search by text uses lexical OR matching", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
 
@@ -451,13 +422,11 @@ describe("journal store", () => {
       body: "Set up pytest with coverage reporting.",
     });
 
-    // With mock embeddings, text search falls through to semantic matching
-    const result = await store.search({ text: "Rust performance" });
-    // Should find at least the matching entry
-    expect(result.total).toBeGreaterThan(0);
+    const result = await store.search({ text: "Rust absentterm" });
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Rust performance"]);
   });
 
-  test("title query surfaces long-body entry despite diluted embedding", async () => {
+  test("title query matches terms from the title", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const entry = await store.write({
@@ -465,282 +434,29 @@ describe("journal store", () => {
       body: "Unrelated topics include coastal erosion, orbital mechanics, ceramic glazing, " +
         "database indexing, ancient trade routes, orchard irrigation, keyboard switches, " +
         "bird migration, public transit planning, and archival paper chemistry. These notes " +
-        "continue across varied subjects so the long body dilutes its mean-pooled embedding. " +
+        "continue across varied subjects in this deliberately long journal entry. " +
         "Further unrelated details cover weather instruments, typography, fermentation, " +
         "geology, woodworking, astronomy, logistics, and museum conservation. The entry is " +
-        "deliberately verbose and semantically unrelated to a fresh exact-title query, while " +
+        "deliberately verbose and does not repeat the title terms in its body, while " +
         "its title remains the searchable anchor for this regression case.",
     });
 
-    // The deterministic mock embeddings produce an unrelated query vector here;
-    // Independent title-match admission guarantees presence regardless of cosine score.
     const result = await store.search({ text: "Agent-memory release delivery channel" });
     expect(result.entries.some((candidate) => candidate.id === entry.id)).toBe(true);
   });
 
-  test("search skips stale-dimension embedding and falls back to text match", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Stale dims entry",
-      body: "unique-stale-dim-content",
-    });
-
-    // First search: caches the entry with the correct mock embedding.
-    await store.search({ text: "unique-stale-dim-content" });
-
-    // Simulate a v2 embedding with a WRONG dimension (e.g. from a 768d model).
-    // Search must not throw: it should skip the embedding and fall back to
-    // text matching for this entry.
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.writeFile(
-      embeddingFile,
-      JSON.stringify({
-        v: 2,
-        model: "some-768d-model",
-        dimension: 768,
-        vector: Array.from({ length: 768 }, () => 0.1),
-      }),
-      "utf-8",
-    );
-
-    // Query whose embedding would collide with the stale one if cosine were
-    // attempted (dimension mismatch would throw inside cosineSimilarity).
-    const result = await store.search({ text: "unique-stale-dim-content" });
-    const titles = result.entries.map((e) => e.title);
-    expect(titles).toContain("Stale dims entry");
-    // No throw above is the assertion: mismatched dimension degrades to text.
-  });
-
-  test("sidecar rewrite after cache warm is picked up by second search", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Sidecar invalidation",
-      body: "unique-sidecar-invalidation-content",
-    });
-
-    // First search: caches the entry + correct sidecar fingerprint.
-    const r1 = await store.search({ text: "unique-sidecar-invalidation-content" });
-    expect(r1.entries.some((e) => e.title === "Sidecar invalidation")).toBe(true);
-
-    // Rewrite the sidecar with a wrong-dimension embedding (simulating
-    // sidecar regeneration without touching the .md).
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.writeFile(
-      embeddingFile,
-      JSON.stringify({
-        v: 2,
-        model: "some-768d-model",
-        dimension: 768,
-        vector: Array.from({ length: 768 }, () => 0.1),
-      }),
-      "utf-8",
-    );
-
-    // Second search must invalidate the cache (sidecar mtime changed) and
-    // pick up the stale-dimension embedding, falling back to text match.
-    const r2 = await store.search({ text: "unique-sidecar-invalidation-content" });
-    expect(r2.entries.some((e) => e.title === "Sidecar invalidation")).toBe(true);
-  });
-
-  test("sidecar deleted between searches falls back to text match", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Sidecar deleted entry",
-      body: "unique-sidecar-deleted-content",
-    });
-
-    // Warm the cache chronologically (loads and caches the sidecar
-    // fingerprint) without depending on a synthetic semantic score.
-    const r1 = await store.search({});
-    expect(r1.entries.some((e) => e.title === "Sidecar deleted entry")).toBe(true);
-
-    // Delete the sidecar file.
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.unlink(embeddingFile);
-
-    // Second search: cache miss (sidecar gone), falls back to exact text
-    // matching rather than using the stale cached embedding.
-    const r2 = await store.search({ text: "unique-sidecar-deleted-content" });
-    const found = r2.entries.find((e) => e.title === "Sidecar deleted entry");
-    expect(found).toBeDefined();
-    // Admission comes from the exact-substring fallback, not cosine.
-  });
-
-  test("search skips corrupt v2 embedding (empty vector) without throwing", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Corrupt embedding entry",
-      body: "unique-corrupt-embedding-content",
-    });
-
-    // Simulate a corrupt-but-well-formed v2 embedding: dimension claims 384
-    // but the vector is empty. Search must NOT throw — it should skip the
-    // embedding and fall back to text matching for this entry.
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.writeFile(
-      embeddingFile,
-      JSON.stringify({ v: 2, model: "some-model", dimension: 8, vector: [] }),
-      "utf-8",
-    );
-
-    const result = await store.search({ text: "unique-corrupt-embedding-content" });
-    const titles = result.entries.map((e) => e.title);
-    expect(titles).toContain("Corrupt embedding entry");
-    // No throw above is the assertion: corrupt v2 embedding degrades to text.
-  });
-
-  test("search skips corrupt v2 embedding (missing vector) without throwing", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Missing vector entry",
-      body: "unique-missing-vector-content",
-    });
-
-    // v2 file that omits the vector field entirely. Search must not throw.
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.writeFile(
-      embeddingFile,
-      JSON.stringify({ v: 2, model: "some-model", dimension: 8 }),
-      "utf-8",
-    );
-
-    const result = await store.search({ text: "unique-missing-vector-content" });
-    const titles = result.entries.map((e) => e.title);
-    expect(titles).toContain("Missing vector entry");
-  });
-
-  test("legacy bare-array embedding is still usable for semantic search", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-
-    const entry = await store.write({
-      title: "Legacy embedding",
-      body: "legacy-vector-body",
-    });
-
-    // Overwrite with a legacy v1 bare-array embedding (from all-MiniLM-L6-v2,
-    // which also produces 8-dim vectors under the test mock). Use the same
-    // mock formula as generateEmbedding so the cosine is positive and the
-    // entry is actually matched via semantic search.
-    const hash = Array.from("legacy-vector-body").reduce(
-      (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
-      0,
-    );
-    const legacyVector = Array.from(
-      { length: 8 },
-      (_, i) => Math.sin(hash + i),
-    );
-    const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
-    await fs.writeFile(
-      embeddingFile,
-      JSON.stringify(legacyVector),
-      "utf-8",
-    );
-
-    // Legacy array must be treated as { vector, model: "unknown-legacy",
-    // dimension: length }; with a matching dimension it stays usable.
-    const result = await store.search({ text: "legacy-vector-body" });
-    const titles = result.entries.map((e) => e.title);
-    expect(titles).toContain("Legacy embedding");
-  });
-
-  test("rejects semantic matches below the initial cosine admission floor", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-    const entry = await store.write({ title: "Unrelated note", body: "nothing relevant" });
-    const query = "floor rejection phrase";
-    const hash = Array.from(query).reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-    const vector = Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
-    await fs.writeFile(entry.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector.map((v) => -v) }));
-
-    const result = await store.search({ text: query });
-    expect(result.total).toBe(0);
-    expect(result.entries).toEqual([]);
-  });
-
-  // Skipped for the OR-only experiment: this asserts cosine-floor admission.
-  test.skip("pins interior semantic cosines on both sides of the admission boundary", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-    const low = await store.write({ title: "Low unrelated", body: "no query tokens here" });
-    const high = await store.write({ title: "High unrelated", body: "still no query tokens" });
-    const query = "interior cosine query";
-    embeddingOverride = [1, 0, 0, 0, 0, 0, 0, 0];
-    const vectorFor = (cosine: number) => [cosine, Math.sqrt(1 - cosine * cosine), 0, 0, 0, 0, 0, 0];
-    await fs.writeFile(low.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vectorFor(0.30) }));
-    await fs.writeFile(high.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vectorFor(0.60) }));
-
-    const result = await store.search({ text: query });
-    expect(result.total).toBe(1);
-    expect(result.entries.map((entry) => entry.id)).toEqual([high.id]);
-  });
-
-  test("lexical matching rescues a rare exact token despite a weak embedding", async () => {
+  test("lexical matching finds a rare exact token", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const entry = await store.write({ title: "Unrelated note", body: "The rarelexicaltoken appears here." });
     const query = "rarelexicaltoken";
-    const hash = Array.from(query).reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-    const vector = Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
-    await fs.writeFile(entry.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector.map((v) => -v) }));
 
     const result = await store.search({ text: query });
     expect(result.total).toBe(1);
     expect(result.entries.map((e) => e.id)).toEqual([entry.id]);
   });
 
-  test("embedding failure keeps exact-substring and title fallback admission", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-    const entry = await store.write({ title: "Fallback anchor", body: "A unique fallback phrase is preserved." });
-    failEmbeddingGeneration = true;
-
-    const result = await store.search({ text: "unique fallback phrase" });
-    expect(result.total).toBe(1);
-    expect(result.entries[0]!.id).toBe(entry.id);
-  });
-
-  test("embedding failure admits a title match when lexical matching cannot", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-    const entry = await store.write({ title: "Anchor", body: "Body contains unrelated words only." });
-    await fs.unlink(entry.filePath.replace(/\.md$/, ".embedding"));
-    failEmbeddingGeneration = true;
-
-    const result = await store.search({ text: "Anchor phrase" });
-    expect(result.total).toBe(1);
-    expect(result.entries.map((candidate) => candidate.id)).toEqual([entry.id]);
-  });
-
-  // Skipped for the OR-only experiment: this asserts semantic/lexical RRF fusion.
-  test.skip("RRF sums a dual-channel rank-2 hit above a semantic-only rank-1 hit", async () => {
-    tmpDir = await mkTmpDir();
-    const store = createJournalStore(tmpDir);
-    const dual = await store.write({ title: "Dual document", body: "contains rarefusiontoken" });
-    await new Promise((r) => setTimeout(r, 5));
-    const semanticOnly = await store.write({ title: "Semantic document", body: "no lexical match here" });
-    embeddingOverride = [1, 0, 0, 0, 0, 0, 0, 0];
-    const vector = (cosine: number) => [cosine, Math.sqrt(1 - cosine * cosine), 0, 0, 0, 0, 0, 0];
-    await fs.writeFile(dual.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector(0.8) }));
-    await fs.writeFile(semanticOnly.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector(1) }));
-
-    const indexesBeforeSearch = lexicalIndexConstructions;
-    const result = await store.search({ text: "rarefusiontoken" });
-    expect(result.entries.map((entry) => entry.id)).toEqual([dual.id, semanticOnly.id]);
-    expect(lexicalIndexConstructions).toBe(indexesBeforeSearch + 1);
-  });
-
-  test("fusion returns unique matches and stable pagination across identical calls", async () => {
+  test("OR matching returns unique matches and stable pagination across identical calls", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     for (let i = 0; i < 4; i++) {
@@ -827,7 +543,7 @@ describe("journal store", () => {
     expect(resultB.total).toBe(1);
   });
 
-  test("cached rankings and totals match an uncached MiniSearch fixture", async () => {
+  test("OR rankings and totals match an uncached MiniSearch fixture", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const docs = [
@@ -853,7 +569,7 @@ describe("journal store", () => {
       uncached.addAll(entries.map((entry) => ({ id: entry.id, title: entry.title, body: entry.body })));
       const expected = uncached.search(text, { combineWith: "OR" })
         .map((match) => ({ entry: entries.find((entry) => entry.id === String(match.id))!, score: match.score }))
-        .sort((a, b) => b.score - a.score || b.entry.created.getTime() - a.entry.created.getTime() || b.entry.id.localeCompare(a.entry.id));
+        .sort((a, b) => b.score - a.score || b.entry.created.getTime() - a.entry.created.getTime() || (a.entry.id < b.entry.id ? 1 : a.entry.id > b.entry.id ? -1 : 0));
       const actual = await store.search({ text });
       expect({ ids: actual.entries.map((entry) => entry.id), total: actual.total }).toEqual({
         ids: expected.map(({ entry }) => entry.id),
@@ -862,22 +578,47 @@ describe("journal store", () => {
     }
   });
 
-  // Skipped for the OR-only experiment: punctuation-only title fallback is removed.
-  test.skip("fallback-only score ties order by created descending, then id descending", async () => {
+  test("punctuation-only query falls back to case-insensitive title/body substring matches", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
-    const older = await store.write({ title: "!!!", body: "older" });
+    const titleMatch = await store.write({ title: "!!!", body: "older" });
     await new Promise((r) => setTimeout(r, 5));
-    const newer = await store.write({ title: "!!!", body: "newer" });
-    const olderRaw = await fs.readFile(older.filePath, "utf-8");
-    const newerRaw = await fs.readFile(newer.filePath, "utf-8");
-    const olderCreated = olderRaw.match(/^created: (.+)$/m)![1]!;
-    await fs.writeFile(newer.filePath, newerRaw.replace(/^created: .+$/m, `created: ${olderCreated}`));
-
+    const bodyMatch = await store.write({ title: "Other", body: "A marker !!! appears here." });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.write({ title: "No match", body: "ordinary text" });
     const result = await store.search({ text: "!!!" });
-    const tiedCreated = new Date(olderCreated.replace(/^'|'$/g, "")).toISOString();
-    expect(result.entries.map((e) => e.created.toISOString())).toEqual([tiedCreated, tiedCreated]);
-    expect(result.entries.map((e) => e.id)).toEqual([newer.id, older.id]);
+    expect(result.total).toBe(2);
+    expect(result.entries.map((entry) => entry.id)).toEqual([bodyMatch.id, titleMatch.id]);
+  });
+
+  test("text search does not generate embeddings", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Keyword note", body: "the lexicalneedle is here" });
+    const callsBeforeSearch = embeddingGenerationCalls;
+
+    const result = await store.search({ text: "lexicalneedle" });
+    expect(result.entries.map((candidate) => candidate.id)).toEqual([entry.id]);
+    expect(embeddingGenerationCalls - callsBeforeSearch).toBe(0);
+  });
+
+  test("text search matches query terms with OR and orders score, creation time, then id descending", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const low = await store.write({ title: "Tie", body: "alpha" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const highId = await store.write({ title: "Tie", body: "alpha" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newest = await store.write({ title: "Tie", body: "beta alpha" });
+    const tiedCreated = "2026-01-01T00:00:00.000Z";
+    for (const entry of [low, highId]) {
+      const original = await fs.readFile(entry.filePath, "utf-8");
+      await fs.writeFile(entry.filePath, original.replace(/^created: .+$/m, `created: '${tiedCreated}'`));
+    }
+
+    const result = await store.search({ text: "alpha beta" });
+    expect(result.entries.map((entry) => entry.id)).toEqual([newest.id, highId.id, low.id]);
+    expect(result.total).toBe(3);
   });
 
   test("search without text remains chronological and does not generate embeddings", async () => {

@@ -6,13 +6,8 @@ import * as yaml from "js-yaml";
 import MiniSearch from "minisearch";
 import { z } from "zod";
 
-import { cosineSimilarity, EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
+import { EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
 import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./frontmatter";
-
-// Initial hypothesis, not a calibrated semantic relevance boundary.
-const SEMANTIC_ADMISSION_FLOOR = 0.45;
-const RRF_K = 60;
-const OR_ONLY_EXPERIMENT = true;
 
 const TagSchema = z.looseObject({
   name: z.string().min(1),
@@ -145,11 +140,20 @@ function embeddingPath(entryPath: string): string {
   return entryPath.replace(/\.md$/, ".embedding");
 }
 
-function titleMatches(queryText: string, title: string): boolean {
-  const q = queryText.trim().toLowerCase();
-  if (!q) return false;
-  const t = title.trim().toLowerCase();
-  return t.includes(q) || q.includes(t);
+function hasLexicalTerms(text: string): boolean {
+  return /[\p{L}\p{N}]+/u.test(text);
+}
+
+function substringMatches(
+  entries: CachedEntry[],
+  query: string,
+): { entry: JournalEntry; score: number }[] {
+  const needle = query.toLowerCase();
+  return entries.flatMap(({ entry }) =>
+    `${entry.title}\n${entry.body}`.toLowerCase().includes(needle)
+      ? [{ entry, score: 0 }]
+      : [],
+  );
 }
 
 async function readEntryFile(filePath: string): Promise<JournalEntry> {
@@ -184,54 +188,11 @@ async function readEntryFile(filePath: string): Promise<JournalEntry> {
   };
 }
 
-type ParsedEmbedding =
-  | { vector: number[]; model: string; dimension: number }
-  | undefined;
-
 type CachedEntry = {
   entryMtimeMs: number;
   entrySize: number;
-  embMtimeMs: number;
-  embSize: number;
   entry: JournalEntry;
-  embedding: ParsedEmbedding;
 };
-
-async function loadEmbedding(entryPath: string): Promise<ParsedEmbedding> {
-  const ePath = embeddingPath(entryPath);
-  try {
-    const raw = await fs.readFile(ePath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      // Legacy v1 (bare array from all-MiniLM-L6-v2)
-      return {
-        vector: parsed as number[],
-        model: "unknown-legacy",
-        dimension: parsed.length,
-      };
-    }
-    if (parsed && typeof parsed === "object" && parsed.v === 2) {
-      const vector = Array.isArray(parsed.vector)
-        ? parsed.vector
-        : undefined;
-      if (
-        vector &&
-        vector.length === (parsed.dimension as number) &&
-        vector.length > 0
-      ) {
-        return {
-          vector,
-          model: parsed.model as string,
-          dimension: parsed.dimension as number,
-        };
-      }
-      return undefined;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -276,7 +237,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
   // different (including nested or ephemeral) journal directories never
   // interfere and no foreign keys can accumulate.
   const entryCache = new Map<string, CachedEntry>();
-  let lexicalIndexSnapshot: { entries: CachedEntry[]; index: MiniSearch } | undefined;
+  let lexicalIndexSnapshot: { ids: string[]; index: MiniSearch } | undefined;
 
   return {
     async write(entry) {
@@ -301,7 +262,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       const content = buildFrontmatterDocument(frontmatter, entry.body);
       await atomicWriteFile(filePath, content);
 
-      // Generate and save embedding for semantic search
+      // Keep the sidecar for compatibility with doctor, the format contract, and future consumers; search does not read it.
       const searchableText = `${entry.title}\n${entry.body}`;
       try {
         const embedding = await generateEmbedding(searchableText, cacheDir);
@@ -373,49 +334,28 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         if (!alive.has(key)) entryCache.delete(key);
       }
 
-      // Textless searches intentionally avoid both embedding generation and
-      // construction of an ephemeral lexical index.
-      let queryEmbedding: number[] | undefined;
-      if (query.text && !OR_ONLY_EXPERIMENT) {
-        try {
-          queryEmbedding = await generateEmbedding(query.text, cacheDir);
-        } catch {
-          // Fall back to text search if embedding fails
-        }
-      }
-
       // Collect all tags across every entry (before filtering)
       const tagSet = new Set<string>();
+      let entryCacheChanged = false;
 
       const indexed = await Promise.all(files.map(async (file) => {
         const filePath = path.join(journalDir, file);
         try {
-          const ePath = embeddingPath(filePath);
-          const [entryStat, embStat] = await Promise.all([
-            fs.stat(filePath),
-            fs.stat(ePath).catch(() => ({ mtimeMs: -1, size: -1 } as const)),
-          ]);
+          const entryStat = await fs.stat(filePath);
           const cached = entryCache.get(filePath);
           if (
             cached &&
             cached.entryMtimeMs === entryStat.mtimeMs &&
-            cached.entrySize === entryStat.size &&
-            cached.embMtimeMs === embStat.mtimeMs &&
-            cached.embSize === embStat.size
+            cached.entrySize === entryStat.size
           ) {
             return cached;
           }
-          const [entry, embedding] = await Promise.all([
-            readEntryFile(filePath),
-            loadEmbedding(filePath),
-          ]);
+          const entry = await readEntryFile(filePath);
+          entryCacheChanged = true;
           const value: CachedEntry = {
             entryMtimeMs: entryStat.mtimeMs,
             entrySize: entryStat.size,
-            embMtimeMs: embStat.mtimeMs,
-            embSize: embStat.size,
             entry,
-            embedding,
           };
           entryCache.set(filePath, value);
           return value;
@@ -455,112 +395,46 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
           entry,
           score: entry.created.getTime(),
         }));
-        ranked.sort((a, b) =>
-          b.score - a.score || b.entry.id.localeCompare(a.entry.id),
-        );
+        ranked.sort((a, b) => b.score - a.score || (a.entry.id < b.entry.id ? 1 : a.entry.id > b.entry.id ? -1 : 0));
       } else {
-        if (OR_ONLY_EXPERIMENT) {
-          const sameEntries = lexicalIndexSnapshot !== undefined &&
-            lexicalIndexSnapshot.entries.length === filtered.length &&
-            filtered.every((cached, index) => lexicalIndexSnapshot!.entries[index] === cached);
-          let lexicalIndex: MiniSearch;
-          if (sameEntries) {
-            lexicalIndex = lexicalIndexSnapshot!.index;
-          } else {
-            const builtIndex = new MiniSearch({
-              fields: ["title", "body"],
-              storeFields: ["id"],
-            });
-            builtIndex.addAll(filtered.map(({ entry }) => ({
-              id: entry.id,
-              title: entry.title,
-              body: entry.body,
-            })));
-            lexicalIndexSnapshot = { entries: filtered.slice(), index: builtIndex };
-            lexicalIndex = builtIndex;
-          }
-          const byId = new Map(filtered.map(({ entry }) => [entry.id, entry]));
-          ranked = lexicalIndex.search(query.text, { combineWith: "OR" })
-            .flatMap((match) => {
-              const entry = byId.get(String(match.id));
-              return entry ? [{ entry, score: match.score }] : [];
-            });
-          ranked.sort((a, b) =>
-            b.score - a.score ||
-            b.entry.created.getTime() - a.entry.created.getTime() ||
-            b.entry.id.localeCompare(a.entry.id),
-          );
+        const ids = filtered.map(({ entry }) => entry.id);
+        const sameEntries = !entryCacheChanged && lexicalIndexSnapshot !== undefined &&
+          lexicalIndexSnapshot.ids.length === ids.length &&
+          ids.every((id, index) => lexicalIndexSnapshot!.ids[index] === id);
+        let lexicalIndex: MiniSearch;
+        if (sameEntries) {
+          lexicalIndex = lexicalIndexSnapshot!.index;
         } else {
-        const semantic: { entry: JournalEntry; cosine: number }[] = [];
-        const fallbackIds = new Set<string>();
-        for (const cached of filtered) {
-          const { entry, embedding } = cached;
-          const haystack = `${entry.title}\n${entry.body}`.toLowerCase();
-          const exactSubstringMatch = haystack.includes(query.text.toLowerCase());
-          const titleMatch = titleMatches(query.text, entry.title);
-          const usableEmbedding = embedding?.dimension === EMBEDDING_DIMENSION &&
-            embedding.vector.length === EMBEDDING_DIMENSION &&
-            embedding.vector.every(Number.isFinite);
-
-          if (queryEmbedding && usableEmbedding) {
-            const cosine = cosineSimilarity(queryEmbedding, embedding.vector);
-            if (cosine >= SEMANTIC_ADMISSION_FLOOR) semantic.push({ entry, cosine });
-          } else if (exactSubstringMatch || titleMatch) {
-            // Preserve legacy fallback membership without treating its
-            // synthetic score as a cosine similarity.
-            fallbackIds.add(entry.id);
-          }
-
-          // Title and exact-substring admission are independent of the cosine
-          // floor, including when a valid sidecar exists.
-          if (titleMatch || ((!usableEmbedding || !queryEmbedding) && exactSubstringMatch)) {
-            fallbackIds.add(entry.id);
-          }
+          const builtIndex = new MiniSearch({
+            fields: ["title", "body"],
+            storeFields: ["id"],
+          });
+          builtIndex.addAll(filtered.map(({ entry }) => ({
+            id: entry.id,
+            title: entry.title,
+            body: entry.body,
+          })));
+          lexicalIndexSnapshot = { ids, index: builtIndex };
+          lexicalIndex = builtIndex;
         }
-
-        semantic.sort((a, b) =>
-          b.cosine - a.cosine ||
-          b.entry.created.getTime() - a.entry.created.getTime() ||
-          b.entry.id.localeCompare(a.entry.id),
-        );
-
-        const lexicalIndex = new MiniSearch({
-          fields: ["title", "body"],
-          storeFields: ["id"],
-        });
-        lexicalIndex.addAll(filtered.map(({ entry }) => ({
-          id: entry.id,
-          title: entry.title,
-          body: entry.body,
-        })));
-        const lexical = lexicalIndex.search(query.text, { combineWith: "AND" });
-
-        const fused = new Map<string, number>();
-        semantic.forEach(({ entry }, index) => {
-          fused.set(entry.id, (fused.get(entry.id) ?? 0) + 1 / (RRF_K + index + 1));
-        });
-        lexical.forEach((match, index) => {
-          const id = String(match.id);
-          fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + index + 1));
-        });
-
         const byId = new Map(filtered.map(({ entry }) => [entry.id, entry]));
-        const admittedIds = new Set([...fused.keys(), ...fallbackIds]);
-        ranked = [];
-        for (const id of admittedIds) {
-          const entry = byId.get(id);
-          if (!entry) continue;
-          ranked.push({ entry, score: fused.get(id) ?? 0 });
+        const lexical = lexicalIndex.search(query.text, { combineWith: "OR" });
+        if (hasLexicalTerms(query.text)) {
+          ranked = lexical.flatMap((match) => {
+            const entry = byId.get(String(match.id));
+            return entry ? [{ entry, score: match.score }] : [];
+          });
+        } else {
+          ranked = substringMatches(filtered, query.text);
         }
         ranked.sort((a, b) =>
           b.score - a.score ||
           b.entry.created.getTime() - a.entry.created.getTime() ||
-          b.entry.id.localeCompare(a.entry.id),
+          (a.entry.id < b.entry.id ? 1 : a.entry.id > b.entry.id ? -1 : 0),
         );
-        }
       }
 
-      // Count unique metadata- and relevance-admitted entries before paging.
+      // Count lexical candidates after metadata filtering, before paging.
       const total = ranked.length;
 
       // Apply offset + limit

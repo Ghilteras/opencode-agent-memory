@@ -31,7 +31,7 @@ describe("v2 journal tools", () => {
     expect([JournalWrite(baseStore, context).name, JournalRead(baseStore).name, JournalSearch(baseStore).name]).toEqual(["journal_write", "journal_read", "journal_search"]);
     expect(JournalWrite(baseStore, context).description).toContain("append-only");
     expect(JournalRead(baseStore).description).toContain("by its ID");
-    expect(JournalSearch(baseStore).description).toContain("semantic similarity");
+    expect(JournalSearch(baseStore).description).toContain("lexical OR matching");
   });
 
   test("journal_write description preserves its behavioral guidance", () => {
@@ -95,7 +95,7 @@ describe("v2 journal tools", () => {
     }
     expect(writeResult.content).toContain("Journal entry created:");
     expect(readResult.content).toContain("Body");
-    expect(searchResult.content).toContain("Found 1 entries");
+    expect(searchResult.content).toContain("Found 1 candidate entries");
   });
 
   test("retains bounded tag inventory output formatting", async () => {
