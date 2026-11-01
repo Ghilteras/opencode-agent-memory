@@ -1,1 +1,4 @@
 node_modules/
+
+# Local agent index; not part of the package.
+/MEMORY.md
