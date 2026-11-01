@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.0.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.0.1"]
 }
 ```
 
@@ -74,7 +74,7 @@ Entries are markdown files with YAML frontmatter in `~/.config/opencode/journal/
 ---
 title: "Reasoning-pruner wiring"
 created: 2026-09-21T18:16:11.300Z
-project: /home/angelo/homelab-config
+project: /path/to/project
 model: deepseek-v4.1-flash
 provider: opencode-go
 agent: executor
@@ -113,7 +113,7 @@ By default the transformers.js model cache lives in the default location (`~/.ca
 
 ```json
 {
-  "cacheDir": "/home/angelo/.cache/opencode/memory-model",
+  "cacheDir": "~/.cache/opencode/memory-model",
   "journal": {
     "enabled": true
   }

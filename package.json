@@ -1,6 +1,6 @@
 {
   "name": "@ghilteras/opencode-agent-memory",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Journal-only memory plugin for OpenCode: tagged, searchable, append-only journal with semantic search.",
   "author": "Angelo Pantano <ghilteras@protonmail.com>",
   "license": "MIT",
@@ -13,9 +13,7 @@
   },
   "main": "src/plugin.ts",
   "type": "module",
-  "files": [
-    "src"
-  ],
+  "files": ["src", "!src/**/*.test.ts", "!src/test-suite.test.ts"],
   "scripts": {
     "test": "bun run test:core && bun run test:plugin",
     "test:core": "bun test src/test-suite.test.ts src/doctor.test.ts src/embeddings.test.ts src/tools.test.ts src/journal.test.ts",

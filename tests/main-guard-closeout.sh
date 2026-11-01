@@ -16,14 +16,14 @@ s=open(sys.argv[1].rsplit('/scripts/',1)[0]+'/lefthook.yml').read(); block=s.spl
 assert 'use_stdin: true' in block and 'main-guard.sh {stdin}' not in block
 print('PASS lefthook stdin wiring tripwire')
 PY
-TMP_MAIN=$(mktemp -d /tmp/opencode/main-guard.XXXXXX); trap 'rm -rf "$TMP_MAIN"' EXIT
+TMP_MAIN=$(mktemp -d /tmp/main-guard.XXXXXX); trap 'rm -rf "$TMP_MAIN"' EXIT
 git -C "$TMP_MAIN" init -q -b main
 git -C "$TMP_MAIN" -c user.email=test@example.invalid -c user.name=Test commit -q --allow-empty -m init
 if (cd "$TMP_MAIN" && env OPENCODE_CLOSEOUT=1 bash "$GUARD"); then echo 'FAIL canonical accepted'; exit 1; else rc=$?; [ "$rc" = 1 ]; echo 'PASS canonical pre-commit blocked (exit 1)'; fi
 CUR_BRANCH=$(git branch --show-current)
 if [ "$CUR_BRANCH" != main ] && [ "$CUR_BRANCH" != master ]; then env OPENCODE_CLOSEOUT=1 bash "$GUARD"; echo 'PASS feature worktree allowed (exit 0)'; fi
-command -v lefthook >/dev/null && LH=$(command -v lefthook) || LH=/home/angelo/.local/bin/lefthook
-E2E=$(mktemp -d /tmp/opencode/lefthook-guard.XXXXXX); trap 'rm -rf "$TMP_MAIN" "$E2E"' EXIT
+command -v lefthook >/dev/null && LH=$(command -v lefthook) || LH="$HOME/.local/bin/lefthook"
+E2E=$(mktemp -d /tmp/lefthook-guard.XXXXXX); trap 'rm -rf "$TMP_MAIN" "$E2E"' EXIT
 mkdir "$E2E/repo"; git -C "$E2E/repo" init -q -b topic; git -C "$E2E/repo" config user.email test@example.invalid; git -C "$E2E/repo" config user.name Test
 git init --bare -q "$E2E/remote.git"; git -C "$E2E/repo" remote add origin "$E2E/remote.git"
 printf 'test\n' > "$E2E/repo/file"; git -C "$E2E/repo" add file; git -C "$E2E/repo" commit -qm fixture
