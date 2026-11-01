@@ -17,7 +17,7 @@ Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](ht
 ## Features
 
 - **Append-only journal** - Entries survive across sessions and context compaction
-- **Local semantic search** - Find entries by meaning, not just keywords
+- **Hybrid local search** - Find entries by meaning and keywords
 - **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
 - **Guidance in tool descriptions** - Journal usage guidance lives in the descriptions of the journal tools, so an agent sees it only when it is allowed to call them
 - **No data leaves the machine** - Embeddings run locally
@@ -63,7 +63,7 @@ The agent gets 3 tools:
 | Tool | Description |
 |------|-------------|
 | `journal_write` | Write a new append-only entry (title, body, optional tags) |
-| `journal_search` | Search entries semantically, filter by project or tags, with pagination |
+| `journal_search` | Search entries by semantic similarity and keywords, filter by project or tags, with pagination |
 | `journal_read` | Read a specific journal entry by ID |
 
 ### Entry format
@@ -87,7 +87,7 @@ Body text...
 
 ### Semantic search
 
-Search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine. An `.embedding` sidecar is written next to each entry in a versioned format (`{ v: 2, model, dimension, vector }`). The search gate is a **dimension** check: an entry whose recorded `dimension` differs from the plugin's expected dimension is not cosine-compared - it falls back to text matching instead of failing the search. Legacy bare-array embeddings from v0.3.x remain readable.
+Search uses local embeddings ([paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2), 384d, multilingual EN/IT) - no data leaves your machine. An `.embedding` sidecar is written next to each entry in a versioned format (`{ v: 2, model, dimension, vector }`). A stored vector is compared only when its dimension matches; semantic admission then requires raw cosine similarity of at least 0.45, an internal initial hypothesis rather than a calibrated boundary. Title matches bypass that floor. Exact-substring fallback preserves matches when a sidecar is unusable or query-embedding generation fails. A MiniSearch BM25+ lexical channel independently searches title and body using AND-matched query terms; its ranking is fused with admitted semantic results by reciprocal rank fusion. Legacy bare-array embeddings from v0.3.x remain readable.
 
 ### Suggested tags
 

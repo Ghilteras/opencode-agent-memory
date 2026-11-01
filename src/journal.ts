@@ -3,10 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import * as yaml from "js-yaml";
+import MiniSearch from "minisearch";
 import { z } from "zod";
 
 import { cosineSimilarity, EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
 import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./frontmatter";
+
+// Initial hypothesis, not a calibrated semantic relevance boundary.
+const SEMANTIC_ADMISSION_FLOOR = 0.45;
+const RRF_K = 60;
 
 const TagSchema = z.looseObject({
   name: z.string().min(1),
@@ -345,8 +350,6 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
       const offset = Math.max(query.offset ?? 0, 0);
 
-      let entries: { entry: JournalEntry; score: number }[] = [];
-
       // Read all entry files
       let files: string[];
       try {
@@ -368,7 +371,8 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         if (!alive.has(key)) entryCache.delete(key);
       }
 
-      // If a text query is provided, try semantic search first
+      // Textless searches intentionally avoid both embedding generation and
+      // construction of an ephemeral lexical index.
       let queryEmbedding: number[] | undefined;
       if (query.text) {
         try {
@@ -418,6 +422,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         }
       }));
 
+      const filtered: CachedEntry[] = [];
       for (const cached of indexed) {
         if (!cached) continue;
         const { entry } = cached;
@@ -439,65 +444,95 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
           if (!allTagsMatch) continue;
         }
 
-        // Score the entry
-        let score = 0;
-
-        if (query.text) {
-          if (queryEmbedding) {
-            // Semantic search
-            const storedEmbedding = cached.embedding;
-            if (storedEmbedding) {
-              // Hard gate: dimension must match, or the embedding is stale
-              // (different model) and cannot be compared with cosine.
-              // A mismatched/stale embedding degrades gracefully to text match.
-              if (storedEmbedding.dimension !== EMBEDDING_DIMENSION) {
-                const haystack =
-                  `${entry.title}\n${entry.body}`.toLowerCase();
-                score = haystack.includes(query.text.toLowerCase()) ? 0.5 : 0;
-              } else {
-                score = cosineSimilarity(
-                  queryEmbedding,
-                  storedEmbedding.vector,
-                );
-              }
-            } else {
-              // No embedding stored; fall back to text match
-              const haystack =
-                `${entry.title}\n${entry.body}`.toLowerCase();
-              score = haystack.includes(query.text.toLowerCase()) ? 0.5 : 0;
-            }
-          } else {
-            // Text search fallback
-            const haystack = `${entry.title}\n${entry.body}`.toLowerCase();
-            score = haystack.includes(query.text.toLowerCase()) ? 1 : 0;
-          }
-
-          // Title-anchor floor: a query that matches the entry title (either
-          // direction, case-insensitive) must not be diluted below the top
-          // ranks by long-body mean pooling (see 20260905-171239-533).
-          if (titleMatches(query.text, entry.title)) {
-            score = Math.max(score, 0.75);
-          }
-
-          if (score <= 0) continue;
-        } else {
-          // No text query - chronological order (score by recency)
-          score = entry.created.getTime();
-        }
-
-        entries.push({ entry, score });
+        filtered.push(cached);
       }
 
-      const total = entries.length;
+      let ranked: { entry: JournalEntry; score: number }[];
+      if (!query.text) {
+        ranked = filtered.map(({ entry }) => ({
+          entry,
+          score: entry.created.getTime(),
+        }));
+        ranked.sort((a, b) =>
+          b.score - a.score || b.entry.id.localeCompare(a.entry.id),
+        );
+      } else {
+        const semantic: { entry: JournalEntry; cosine: number }[] = [];
+        const fallbackIds = new Set<string>();
+        for (const cached of filtered) {
+          const { entry, embedding } = cached;
+          const haystack = `${entry.title}\n${entry.body}`.toLowerCase();
+          const exactSubstringMatch = haystack.includes(query.text.toLowerCase());
+          const titleMatch = titleMatches(query.text, entry.title);
+          const usableEmbedding = embedding?.dimension === EMBEDDING_DIMENSION &&
+            embedding.vector.length === EMBEDDING_DIMENSION &&
+            embedding.vector.every(Number.isFinite);
 
-      // Sort by score descending
-      entries.sort((a, b) => b.score - a.score);
+          if (queryEmbedding && usableEmbedding) {
+            const cosine = cosineSimilarity(queryEmbedding, embedding.vector);
+            if (cosine >= SEMANTIC_ADMISSION_FLOOR) semantic.push({ entry, cosine });
+          } else if (exactSubstringMatch || titleMatch) {
+            // Preserve legacy fallback membership without treating its
+            // synthetic score as a cosine similarity.
+            fallbackIds.add(entry.id);
+          }
+
+          // Title and exact-substring admission are independent of the cosine
+          // floor, including when a valid sidecar exists.
+          if (titleMatch || ((!usableEmbedding || !queryEmbedding) && exactSubstringMatch)) {
+            fallbackIds.add(entry.id);
+          }
+        }
+
+        semantic.sort((a, b) =>
+          b.cosine - a.cosine ||
+          b.entry.created.getTime() - a.entry.created.getTime() ||
+          b.entry.id.localeCompare(a.entry.id),
+        );
+
+        const lexicalIndex = new MiniSearch({
+          fields: ["title", "body"],
+          storeFields: ["id"],
+        });
+        lexicalIndex.addAll(filtered.map(({ entry }) => ({
+          id: entry.id,
+          title: entry.title,
+          body: entry.body,
+        })));
+        const lexical = lexicalIndex.search(query.text, { combineWith: "AND" });
+
+        const fused = new Map<string, number>();
+        semantic.forEach(({ entry }, index) => {
+          fused.set(entry.id, (fused.get(entry.id) ?? 0) + 1 / (RRF_K + index + 1));
+        });
+        lexical.forEach((match, index) => {
+          const id = String(match.id);
+          fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + index + 1));
+        });
+
+        const byId = new Map(filtered.map(({ entry }) => [entry.id, entry]));
+        const admittedIds = new Set([...fused.keys(), ...fallbackIds]);
+        ranked = [];
+        for (const id of admittedIds) {
+          const entry = byId.get(id);
+          if (!entry) continue;
+          ranked.push({ entry, score: fused.get(id) ?? 0 });
+        }
+        ranked.sort((a, b) =>
+          b.score - a.score ||
+          b.entry.created.getTime() - a.entry.created.getTime() ||
+          b.entry.id.localeCompare(a.entry.id),
+        );
+      }
+
+      // Count unique metadata- and relevance-admitted entries before paging.
+      const total = ranked.length;
 
       // Apply offset + limit
-      entries = entries.slice(offset, offset + limit);
+      ranked = ranked.slice(offset, offset + limit);
 
       return {
-        entries: entries.map((e) => e.entry),
+        entries: ranked.map((e) => e.entry),
         total,
         allTags: Array.from(tagSet).sort(),
       };

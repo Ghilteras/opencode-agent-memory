@@ -2,6 +2,21 @@ import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
+import NativeMiniSearch from "minisearch";
+
+let failEmbeddingGeneration = false;
+let embeddingGenerationCalls = 0;
+let embeddingOverride: number[] | undefined;
+let lexicalIndexConstructions = 0;
+
+class CountingMiniSearch extends (NativeMiniSearch as any) {
+  constructor(...args: any[]) {
+    super(...args);
+    lexicalIndexConstructions++;
+  }
+}
+
+mock.module("minisearch", () => ({ default: CountingMiniSearch }));
 
 // Mock the embeddings module to avoid downloading a real model in tests.
 // Spread the real module so every export not overridden here keeps its real
@@ -9,6 +24,9 @@ import * as realEmbeddings from "./embeddings";
 mock.module("./embeddings", () => ({
   ...realEmbeddings,
   generateEmbedding: async (text: string) => {
+    embeddingGenerationCalls++;
+    if (failEmbeddingGeneration) throw new Error("injected embedding failure");
+    if (embeddingOverride) return [...embeddingOverride];
     // Deterministic fake embedding based on text content
     const hash = Array.from(text).reduce(
       (acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0,
@@ -143,6 +161,10 @@ describe("journal store", () => {
   let tmpDir: string;
 
   afterEach(async () => {
+    failEmbeddingGeneration = false;
+    embeddingGenerationCalls = 0;
+    embeddingOverride = undefined;
+    lexicalIndexConstructions = 0;
     if (tmpDir) {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
@@ -451,7 +473,7 @@ describe("journal store", () => {
     });
 
     // The deterministic mock embeddings produce an unrelated query vector here;
-    // the title-anchor floor guarantees presence regardless of cosine score.
+    // Independent title-match admission guarantees presence regardless of cosine score.
     const result = await store.search({ text: "Agent-memory release delivery channel" });
     expect(result.entries.some((candidate) => candidate.id === entry.id)).toBe(true);
   });
@@ -542,12 +564,12 @@ describe("journal store", () => {
     const embeddingFile = entry.filePath.replace(/\.md$/, ".embedding");
     await fs.unlink(embeddingFile);
 
-    // Second search: cache miss (sidecar gone), falls back to text match
-    // (score 0.5) rather than using the stale cached embedding.
+    // Second search: cache miss (sidecar gone), falls back to exact text
+    // matching rather than using the stale cached embedding.
     const r2 = await store.search({ text: "unique-sidecar-deleted-content" });
     const found = r2.entries.find((e) => e.title === "Sidecar deleted entry");
     expect(found).toBeDefined();
-    // Score is 0.5 (text fallback), not a cosine score
+    // Admission comes from the exact-substring fallback, not cosine.
   });
 
   test("search skips corrupt v2 embedding (empty vector) without throwing", async () => {
@@ -630,5 +652,139 @@ describe("journal store", () => {
     const result = await store.search({ text: "legacy-vector-body" });
     const titles = result.entries.map((e) => e.title);
     expect(titles).toContain("Legacy embedding");
+  });
+
+  test("rejects semantic matches below the initial cosine admission floor", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Unrelated note", body: "nothing relevant" });
+    const query = "floor rejection phrase";
+    const hash = Array.from(query).reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+    const vector = Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
+    await fs.writeFile(entry.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector.map((v) => -v) }));
+
+    const result = await store.search({ text: query });
+    expect(result.total).toBe(0);
+    expect(result.entries).toEqual([]);
+  });
+
+  test("pins interior semantic cosines on both sides of the admission boundary", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const low = await store.write({ title: "Low unrelated", body: "no query tokens here" });
+    const high = await store.write({ title: "High unrelated", body: "still no query tokens" });
+    const query = "interior cosine query";
+    embeddingOverride = [1, 0, 0, 0, 0, 0, 0, 0];
+    const vectorFor = (cosine: number) => [cosine, Math.sqrt(1 - cosine * cosine), 0, 0, 0, 0, 0, 0];
+    await fs.writeFile(low.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vectorFor(0.30) }));
+    await fs.writeFile(high.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vectorFor(0.60) }));
+
+    const result = await store.search({ text: query });
+    expect(result.total).toBe(1);
+    expect(result.entries.map((entry) => entry.id)).toEqual([high.id]);
+  });
+
+  test("lexical matching rescues a rare exact token despite a weak embedding", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Unrelated note", body: "The rarelexicaltoken appears here." });
+    const query = "rarelexicaltoken";
+    const hash = Array.from(query).reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+    const vector = Array.from({ length: 8 }, (_, i) => Math.sin(hash + i));
+    await fs.writeFile(entry.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector.map((v) => -v) }));
+
+    const result = await store.search({ text: query });
+    expect(result.total).toBe(1);
+    expect(result.entries.map((e) => e.id)).toEqual([entry.id]);
+  });
+
+  test("embedding failure keeps exact-substring and title fallback admission", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Fallback anchor", body: "A unique fallback phrase is preserved." });
+    failEmbeddingGeneration = true;
+
+    const result = await store.search({ text: "unique fallback phrase" });
+    expect(result.total).toBe(1);
+    expect(result.entries[0]!.id).toBe(entry.id);
+  });
+
+  test("embedding failure admits a title match when lexical matching cannot", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Anchor", body: "Body contains unrelated words only." });
+    await fs.unlink(entry.filePath.replace(/\.md$/, ".embedding"));
+    failEmbeddingGeneration = true;
+
+    const result = await store.search({ text: "Anchor phrase" });
+    expect(result.total).toBe(1);
+    expect(result.entries.map((candidate) => candidate.id)).toEqual([entry.id]);
+  });
+
+  test("RRF sums a dual-channel rank-2 hit above a semantic-only rank-1 hit", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const dual = await store.write({ title: "Dual document", body: "contains rarefusiontoken" });
+    await new Promise((r) => setTimeout(r, 5));
+    const semanticOnly = await store.write({ title: "Semantic document", body: "no lexical match here" });
+    embeddingOverride = [1, 0, 0, 0, 0, 0, 0, 0];
+    const vector = (cosine: number) => [cosine, Math.sqrt(1 - cosine * cosine), 0, 0, 0, 0, 0, 0];
+    await fs.writeFile(dual.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector(0.8) }));
+    await fs.writeFile(semanticOnly.filePath.replace(/\.md$/, ".embedding"), JSON.stringify({ v: 2, model: "test-model", dimension: 8, vector: vector(1) }));
+
+    const indexesBeforeSearch = lexicalIndexConstructions;
+    const result = await store.search({ text: "rarefusiontoken" });
+    expect(result.entries.map((entry) => entry.id)).toEqual([dual.id, semanticOnly.id]);
+    expect(lexicalIndexConstructions).toBe(indexesBeforeSearch + 1);
+  });
+
+  test("fusion returns unique matches and stable pagination across identical calls", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    for (let i = 0; i < 4; i++) {
+      await store.write({ title: `Stable ${i}`, body: "sharedtoken searchable" });
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const first = await store.search({ text: "sharedtoken", limit: 2 });
+    const second = await store.search({ text: "sharedtoken", limit: 2 });
+    expect(first.total).toBe(4);
+    expect(second.total).toBe(4);
+    expect(first.entries.map((e) => e.id)).toEqual(second.entries.map((e) => e.id));
+    const next = await store.search({ text: "sharedtoken", limit: 2, offset: 2 });
+    expect([...first.entries, ...next.entries].map((e) => e.id)).toHaveLength(4);
+    expect(new Set([...first.entries, ...next.entries].map((e) => e.id)).size).toBe(4);
+  });
+
+  test("fallback-only score ties order by created descending, then id descending", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const older = await store.write({ title: "!!!", body: "older" });
+    await new Promise((r) => setTimeout(r, 5));
+    const newer = await store.write({ title: "!!!", body: "newer" });
+    const olderRaw = await fs.readFile(older.filePath, "utf-8");
+    const newerRaw = await fs.readFile(newer.filePath, "utf-8");
+    const olderCreated = olderRaw.match(/^created: (.+)$/m)![1]!;
+    await fs.writeFile(newer.filePath, newerRaw.replace(/^created: .+$/m, `created: ${olderCreated}`));
+
+    const result = await store.search({ text: "!!!" });
+    const tiedCreated = new Date(olderCreated.replace(/^'|'$/g, "")).toISOString();
+    expect(result.entries.map((e) => e.created.toISOString())).toEqual([tiedCreated, tiedCreated]);
+    expect(result.entries.map((e) => e.id)).toEqual([newer.id, older.id]);
+  });
+
+  test("search without text remains chronological and does not generate embeddings", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    await store.write({ title: "Older", body: "first" });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.write({ title: "Newer", body: "second" });
+    const callsBeforeSearch = embeddingGenerationCalls;
+    const indexesBeforeSearch = lexicalIndexConstructions;
+
+    const result = await store.search({});
+    expect(result.entries.map((entry) => entry.title)).toEqual(["Newer", "Older"]);
+    expect(embeddingGenerationCalls).toBe(callsBeforeSearch);
+    expect(lexicalIndexConstructions).toBe(indexesBeforeSearch);
   });
 });

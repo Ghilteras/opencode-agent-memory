@@ -27,6 +27,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@opencode/plugin": "^2.0.18",
     "js-yaml": "^4.1.0",
+    "minisearch": "^7.2.0",
     "zod": "^4.1.13"
   },
   "overrides": {
