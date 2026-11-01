@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.0.1"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.0.2"]
 }
 ```
 
