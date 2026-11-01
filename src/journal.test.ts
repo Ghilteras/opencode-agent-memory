@@ -758,6 +758,110 @@ describe("journal store", () => {
     expect(new Set([...first.entries, ...next.entries].map((e) => e.id)).size).toBe(4);
   });
 
+  test("identical text searches reuse the lexical index snapshot", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    await store.write({ title: "Cache token", body: "repeated searchable material" });
+    const before = lexicalIndexConstructions;
+    await store.search({ text: "cache" });
+    expect(lexicalIndexConstructions).toBe(before + 1);
+    await store.search({ text: "cache" });
+    expect(lexicalIndexConstructions).toBe(before + 1);
+  });
+
+  test("adding an entry rebuilds the index and makes it searchable", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    await store.write({ title: "Before", body: "ordinary content" });
+    const before = lexicalIndexConstructions;
+    await store.search({ text: "newlyaddedtoken" });
+    await store.write({ title: "New entry", body: "newlyaddedtoken appears here" });
+    const result = await store.search({ text: "newlyaddedtoken" });
+    expect(lexicalIndexConstructions).toBe(before + 2);
+    expect(result.entries.map((entry) => entry.title)).toEqual(["New entry"]);
+  });
+
+  test("editing entry bytes invalidates the index through the entry stat cache", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const entry = await store.write({ title: "Editable", body: "old unique phrase" });
+    await store.search({ text: "old" });
+    const before = lexicalIndexConstructions;
+    const original = await fs.readFile(entry.filePath, "utf-8");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await fs.writeFile(entry.filePath, original.replace("old unique phrase", "replacementtoken with more bytes"));
+    const oldResult = await store.search({ text: "old" });
+    const newResult = await store.search({ text: "replacementtoken" });
+    expect(lexicalIndexConstructions).toBe(before + 1);
+    expect(oldResult.total).toBe(0);
+    expect(newResult.entries.map((candidate) => candidate.id)).toEqual([entry.id]);
+  });
+
+  test("a metadata filter changing membership rebuilds the lexical index", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    await store.write({ title: "Alpha", body: "sharedfiltertoken", project: "/proj/a" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.write({ title: "Beta", body: "sharedfiltertoken", project: "/proj/b" });
+    const before = lexicalIndexConstructions;
+    const a = await store.search({ text: "sharedfiltertoken", project: "/proj/a" });
+    const b = await store.search({ text: "sharedfiltertoken", project: "/proj/b" });
+    expect(lexicalIndexConstructions).toBe(before + 2);
+    expect(a.entries.map((entry) => entry.title)).toEqual(["Alpha"]);
+    expect(b.entries.map((entry) => entry.title)).toEqual(["Beta"]);
+  });
+
+  test("interleaved searches with different filters retain their own index", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const a = await store.write({ title: "Filtered A", body: "shared interleaved token", project: "/proj/a" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const b = await store.write({ title: "Filtered B", body: "shared interleaved token", project: "/proj/b" });
+    const [resultA, resultB] = await Promise.all([
+      store.search({ text: "interleaved", project: "/proj/a" }),
+      store.search({ text: "interleaved", project: "/proj/b" }),
+    ]);
+    expect(resultA.entries.map((entry) => entry.id)).toEqual([a.id]);
+    expect(resultB.entries.map((entry) => entry.id)).toEqual([b.id]);
+    expect(resultA.total).toBe(1);
+    expect(resultB.total).toBe(1);
+  });
+
+  test("cached rankings and totals match an uncached MiniSearch fixture", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const docs = [
+      ["Alpha systems", "blue green systems reliability"],
+      ["Green garden", "green plants bloom in spring"],
+      ["Blue ocean", "blue water and marine life"],
+      ["Reliable storage", "systems store durable records"],
+      ["Spring systems", "green systems launch in spring"],
+      ["Marine records", "ocean blue records and data"],
+      ["Durable garden", "plants grow with reliable soil"],
+      ["Data storage", "durable systems for data"],
+      ["Blooming ocean", "spring marine bloom"],
+      ["Record reliability", "reliable records stay durable"],
+    ];
+    const entries = [] as Awaited<ReturnType<typeof store.write>>[];
+    for (const [title, body] of docs) {
+      entries.push(await store.write({ title: title!, body: body! }));
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    const queries = ["green systems", "blue records", "durable reliable", "spring ocean", "plants data"];
+    for (const text of queries) {
+      const uncached = new NativeMiniSearch({ fields: ["title", "body"], storeFields: ["id"] });
+      uncached.addAll(entries.map((entry) => ({ id: entry.id, title: entry.title, body: entry.body })));
+      const expected = uncached.search(text, { combineWith: "OR" })
+        .map((match) => ({ entry: entries.find((entry) => entry.id === String(match.id))!, score: match.score }))
+        .sort((a, b) => b.score - a.score || b.entry.created.getTime() - a.entry.created.getTime() || b.entry.id.localeCompare(a.entry.id));
+      const actual = await store.search({ text });
+      expect({ ids: actual.entries.map((entry) => entry.id), total: actual.total }).toEqual({
+        ids: expected.map(({ entry }) => entry.id),
+        total: expected.length,
+      });
+    }
+  });
+
   // Skipped for the OR-only experiment: punctuation-only title fallback is removed.
   test.skip("fallback-only score ties order by created descending, then id descending", async () => {
     tmpDir = await mkTmpDir();

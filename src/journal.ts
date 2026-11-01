@@ -276,6 +276,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
   // different (including nested or ephemeral) journal directories never
   // interfere and no foreign keys can accumulate.
   const entryCache = new Map<string, CachedEntry>();
+  let lexicalIndexSnapshot: { entries: CachedEntry[]; index: MiniSearch } | undefined;
 
   return {
     async write(entry) {
@@ -459,15 +460,25 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
         );
       } else {
         if (OR_ONLY_EXPERIMENT) {
-          const lexicalIndex = new MiniSearch({
-            fields: ["title", "body"],
-            storeFields: ["id"],
-          });
-          lexicalIndex.addAll(filtered.map(({ entry }) => ({
-            id: entry.id,
-            title: entry.title,
-            body: entry.body,
-          })));
+          const sameEntries = lexicalIndexSnapshot !== undefined &&
+            lexicalIndexSnapshot.entries.length === filtered.length &&
+            filtered.every((cached, index) => lexicalIndexSnapshot!.entries[index] === cached);
+          let lexicalIndex: MiniSearch;
+          if (sameEntries) {
+            lexicalIndex = lexicalIndexSnapshot!.index;
+          } else {
+            const builtIndex = new MiniSearch({
+              fields: ["title", "body"],
+              storeFields: ["id"],
+            });
+            builtIndex.addAll(filtered.map(({ entry }) => ({
+              id: entry.id,
+              title: entry.title,
+              body: entry.body,
+            })));
+            lexicalIndexSnapshot = { entries: filtered.slice(), index: builtIndex };
+            lexicalIndex = builtIndex;
+          }
           const byId = new Map(filtered.map(({ entry }) => [entry.id, entry]));
           ranked = lexicalIndex.search(query.text, { combineWith: "OR" })
             .flatMap((match) => {
