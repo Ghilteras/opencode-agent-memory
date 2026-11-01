@@ -668,7 +668,8 @@ describe("journal store", () => {
     expect(result.entries).toEqual([]);
   });
 
-  test("pins interior semantic cosines on both sides of the admission boundary", async () => {
+  // Skipped for the OR-only experiment: this asserts cosine-floor admission.
+  test.skip("pins interior semantic cosines on both sides of the admission boundary", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const low = await store.write({ title: "Low unrelated", body: "no query tokens here" });
@@ -721,7 +722,8 @@ describe("journal store", () => {
     expect(result.entries.map((candidate) => candidate.id)).toEqual([entry.id]);
   });
 
-  test("RRF sums a dual-channel rank-2 hit above a semantic-only rank-1 hit", async () => {
+  // Skipped for the OR-only experiment: this asserts semantic/lexical RRF fusion.
+  test.skip("RRF sums a dual-channel rank-2 hit above a semantic-only rank-1 hit", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const dual = await store.write({ title: "Dual document", body: "contains rarefusiontoken" });
@@ -756,7 +758,8 @@ describe("journal store", () => {
     expect(new Set([...first.entries, ...next.entries].map((e) => e.id)).size).toBe(4);
   });
 
-  test("fallback-only score ties order by created descending, then id descending", async () => {
+  // Skipped for the OR-only experiment: punctuation-only title fallback is removed.
+  test.skip("fallback-only score ties order by created descending, then id descending", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);
     const older = await store.write({ title: "!!!", body: "older" });

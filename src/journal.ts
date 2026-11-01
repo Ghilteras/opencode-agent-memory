@@ -12,6 +12,7 @@ import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./f
 // Initial hypothesis, not a calibrated semantic relevance boundary.
 const SEMANTIC_ADMISSION_FLOOR = 0.45;
 const RRF_K = 60;
+const OR_ONLY_EXPERIMENT = true;
 
 const TagSchema = z.looseObject({
   name: z.string().min(1),
@@ -374,7 +375,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       // Textless searches intentionally avoid both embedding generation and
       // construction of an ephemeral lexical index.
       let queryEmbedding: number[] | undefined;
-      if (query.text) {
+      if (query.text && !OR_ONLY_EXPERIMENT) {
         try {
           queryEmbedding = await generateEmbedding(query.text, cacheDir);
         } catch {
@@ -457,6 +458,28 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
           b.score - a.score || b.entry.id.localeCompare(a.entry.id),
         );
       } else {
+        if (OR_ONLY_EXPERIMENT) {
+          const lexicalIndex = new MiniSearch({
+            fields: ["title", "body"],
+            storeFields: ["id"],
+          });
+          lexicalIndex.addAll(filtered.map(({ entry }) => ({
+            id: entry.id,
+            title: entry.title,
+            body: entry.body,
+          })));
+          const byId = new Map(filtered.map(({ entry }) => [entry.id, entry]));
+          ranked = lexicalIndex.search(query.text, { combineWith: "OR" })
+            .flatMap((match) => {
+              const entry = byId.get(String(match.id));
+              return entry ? [{ entry, score: match.score }] : [];
+            });
+          ranked.sort((a, b) =>
+            b.score - a.score ||
+            b.entry.created.getTime() - a.entry.created.getTime() ||
+            b.entry.id.localeCompare(a.entry.id),
+          );
+        } else {
         const semantic: { entry: JournalEntry; cosine: number }[] = [];
         const fallbackIds = new Set<string>();
         for (const cached of filtered) {
@@ -523,6 +546,7 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
           b.entry.created.getTime() - a.entry.created.getTime() ||
           b.entry.id.localeCompare(a.entry.id),
         );
+        }
       }
 
       // Count unique metadata- and relevance-admitted entries before paging.
