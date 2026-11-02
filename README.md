@@ -111,7 +111,7 @@ Constraints and pagination:
 - Searches without non-whitespace `text` are never reranked.
 - Enabled ordering is **not reproducible** across calls, so offset pagination is a slice of each call's ranking, not a stable snapshot.
 
-On failure, the result falls back to BM25 without retry. Failure reason codes are: `invalid_config` (invalid or non-HTTPS endpoint), `missing_credential`, `timeout`, `transport_error`, `http_error`, `malformed_body`, `malformed_labels`, `budget_exceeded` (request/response size or completion-token limit), and `aborted` (the search was cancelled). Searches skipped without a reranking request report `no_query`, `insufficient_candidates`, or `outside_window`.
+On failure, the result falls back to the ordinary BM25 page without retry, preserving its candidate count (`total`). An invalid reranking configuration also returns that BM25 page with `ranking.status: "fallback"` and `ranking.reason: "invalid_config"`; disabled or missing reranking configuration remains silent and adds no `ranking` field. Other failure reason codes are `missing_credential`, `timeout`, `transport_error`, `http_error`, `malformed_body`, `malformed_labels`, `budget_exceeded` (request/response size or completion-token limit), and `aborted` (the search was cancelled). Searches skipped without a reranking request report `no_query`, `insufficient_candidates`, or `outside_window`.
 
 ### Suggested tags
 
@@ -168,7 +168,7 @@ Existing `~/.config/opencode/memory/` and `.opencode/memory/` directories are **
 ## Compatibility & Troubleshooting
 
 - **Requires OpenCode v2.** This release uses the OpenCode v2 plugin API and does not run on v1.
-- **Restart after config changes.** Plugin config changes require a full OpenCode restart to take effect; editing the config file alone is not sufficient.
+- **Config changes.** `agent-memory.json` (journal configuration) is loaded when the plugin initializes, so changes require restarting OpenCode. `agent-memory-rerank.json` is read for each search, so reranking config changes take effect on the next search without a restart.
 - **Journal is on by default.** Turn it off with `"enabled": false`; an explicit disable is silent, while a config that exists but is unreadable, malformed, or schema-invalid logs a warning and registers no tools (fail-closed).
 - **Embedding sidecars remain compatible.** They are written locally for the existing format contract, diagnostics, and future consumers; text search is lexical and does not read embeddings.
 - **Known limitation (since 0.5.1): guidance-in-descriptions depends on an unverified premise.** 0.5.1 moved journal guidance from the injected system-prompt note into the three journal tool descriptions, so only agents allowed to call those tools should see it. That relies on opencode omitting a permission-denied tool from the definitions sent to the model. This is **unverified**: a `tool.definition` probe on the isolated instance fires before permission filtering, so it cannot confirm what the model actually receives. If the premise does not hold, an agent denied `journal_*` may still read the description text; `deny` still blocks execution, so there is no capability escalation and no data disclosure — the blast radius is the three tools' description strings.

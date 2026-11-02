@@ -28,7 +28,7 @@ type ToolDefinition = {
   name: string;
   description: string;
   input: JsonSchema;
-  execute(input: Record<string, unknown>, context: { agent: string; sessionID: string }): Promise<{ content: string; ranking?: JournalRanking }>;
+  execute(input: Record<string, unknown>, context: { agent: string; sessionID: string; signal?: AbortSignal }): Promise<{ content: string; ranking?: JournalRanking }>;
 };
 type JournalRanking =
   | { method: "bm25+llm-rrf"; status: "applied"; candidateCount: number; labelCount: number; k: 10 }
@@ -104,7 +104,7 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
       },
       additionalProperties: false,
     },
-    async execute(input) {
+    async execute(input, toolCtx) {
       const query = {
         text: input.text as string | undefined,
         project: input.project as string | undefined,
@@ -112,14 +112,17 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
         limit: input.limit as number | undefined,
         offset: input.offset as number | undefined,
       };
-      const offset = query.offset ?? 0;
-      const limit = query.limit ?? 20;
+      const offset = Math.max(0, Math.trunc(query.offset ?? 0));
+      const limit = Math.min(50, Math.max(1, Math.trunc(query.limit ?? 20)));
       const config = await loadConfig();
       let result: Awaited<ReturnType<JournalStore["search"]>>;
       let ranking: JournalRanking | undefined;
 
-      if (config.status !== "enabled") {
+      if (config.status === "disabled") {
         result = await store.search(query);
+      } else if (config.status === "invalid") {
+        result = await store.search(query);
+        ranking = { method: "bm25", status: "fallback", reason: "invalid_config" };
       } else {
         const [ordinary, window] = await Promise.all([
           store.search(query),
@@ -130,7 +133,9 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
           ranking = { method: "bm25", status: "skipped", reason: "no_query" };
         } else if (window.entries.length < 2) {
           ranking = { method: "bm25", status: "skipped", reason: "insufficient_candidates" };
-        } else if (offset + limit > window.entries.length) {
+        } else if (offset >= window.entries.length) {
+          ranking = { method: "bm25", status: "skipped", reason: "outside_window" };
+        } else if (offset + limit > window.entries.length && ordinary.total > window.entries.length) {
           ranking = { method: "bm25", status: "skipped", reason: "outside_window" };
         } else {
           const candidates = buildCandidates(window.entries);
@@ -142,6 +147,7 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
               body: buildRequestBody({ model: config.config.model, query: query.text ?? "", candidates, count }),
               candidates,
               count,
+              signal: toolCtx.signal,
             });
             if (!outcome.ok) {
               ranking = { method: "bm25", status: "fallback", reason: outcome.reason };

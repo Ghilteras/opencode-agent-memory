@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { JournalEntry, JournalStore } from "./journal";
 import { JournalSearch } from "./tools";
 import type { RerankCandidate } from "./rerank";
-import type { RerankOutcome } from "./rerank-transport";
+import { loadRerankConfig, type RerankConfigLoad } from "./rerank-config";
+import { requestRerank, type RerankOutcome } from "./rerank-transport";
 
 const now = new Date("2026-01-01T00:00:00.000Z");
 function makeEntry(index: number, project = "/p", tags = ["include"]): JournalEntry {
@@ -15,8 +19,8 @@ function makeStore(count: number): JournalStore {
     read: async () => all[0]!,
     search: async (query) => {
       const filtered = all.filter((entry) => (!query.project || entry.project === query.project) && (!query.tags?.length || query.tags.every((tag) => entry.tags.includes(tag))));
-      const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
-      const offset = Math.max(query.offset ?? 0, 0);
+      const limit = Math.min(50, Math.max(1, Math.trunc(query.limit ?? 20)));
+      const offset = Math.max(0, Math.trunc(query.offset ?? 0));
       return { entries: filtered.slice(offset, offset + limit), total: filtered.length, allTags: ["include"] };
     },
   };
@@ -27,7 +31,11 @@ const success = (labels: string[], seen?: RerankCandidate[]) => async (args: Par
   if (seen) seen.push(...args.candidates);
   return { ok: true, labels };
 };
-const run = (store: JournalStore, loadConfig: typeof enabled | typeof disabled, request?: typeof success extends (...args: any[]) => infer R ? R : never, env?: (name: string) => string | undefined, input: Record<string, unknown> = {}) => JournalSearch(store, { loadConfig, request, env }).execute(input, {} as any);
+const run = (store: JournalStore, loadConfig: () => Promise<RerankConfigLoad>, request?: typeof requestRerank, env?: (name: string) => string | undefined, input: Record<string, unknown> = {}, signal?: AbortSignal) => JournalSearch(store, { loadConfig, request, env }).execute(input, { agent: "a", sessionID: "s", signal });
+
+function resultIds(content: string): string[] {
+  return [...content.matchAll(/\b(entry-\d+)\b/g)].map((match) => match[1]!);
+}
 
 describe("journal_search rerank integration", () => {
   const originalFetch = globalThis.fetch;
@@ -54,9 +62,76 @@ describe("journal_search rerank integration", () => {
     const response = await run(store, enabled, success(["C50", "C49", "C48", "C47", "C46", "C45", "C44", "C43", "C42", "C41"]), () => "key", { text: "query", limit: 50 });
     expect(response.ranking).toEqual({ method: "bm25+llm-rrf", status: "applied", candidateCount: 50, labelCount: 10, k: 10 });
     expect(response.content).toContain("Found 50 candidate entries");
-    expect(response.content.indexOf("entry-49")).toBeLessThan(response.content.indexOf("entry-0"));
-    expect((response.content.match(/entry-/g) ?? []).length).toBe(50);
+    expect(resultIds(response.content)).toEqual([
+      "entry-49", "entry-48", "entry-47", "entry-0", "entry-46", "entry-45", "entry-1", "entry-44", "entry-43", "entry-2",
+      "entry-42", "entry-41", "entry-3", "entry-40", ...Array.from({ length: 36 }, (_, i) => `entry-${i + 4}`),
+    ]);
     checkFetch();
+  });
+
+  test("invalid configuration preserves BM25 results and reports fallback", async () => {
+    const checkFetch = trapFetch();
+    const store = makeStore(6);
+    const input = { text: "query", limit: 5 };
+    const baseline = await run(store, disabled, undefined, undefined, input);
+    const injected = await run(store, async () => ({ status: "invalid", reason: "fixture invalid" }), undefined, undefined, input);
+    expect(injected.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
+    expect(resultIds(injected.content)).toEqual(resultIds(baseline.content));
+    expect(injected.content).toBe(baseline.content);
+    expect(injected.content).toContain("Found 6 candidate entries");
+
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "rerank-invalid-config-"));
+    try {
+      await fs.writeFile(path.join(dir, "agent-memory-rerank.json"), "{ malformed", "utf8");
+      const actualLoader = await loadRerankConfig(dir);
+      expect(actualLoader.status).toBe("invalid");
+      const actual = await run(store, () => loadRerankConfig(dir), undefined, undefined, input);
+      expect(actual.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
+      expect(actual.content).toBe(baseline.content);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+    checkFetch();
+  });
+
+  test("rerank pagination preserves BM25 result counts across the requested matrix", async () => {
+    const offsets = [0, 5, 45, 49, 50, 60];
+    const limits = [0, 1, 5, 20, 50, 51, 100];
+    const corpora = [0, 1, 6, 20, 50, 51, 100];
+    const labels = Array.from({ length: 50 }, (_, i) => `C${String(50 - i).padStart(2, "0")}`);
+    const mismatches: string[] = [];
+    for (const corpus of corpora) {
+      for (const offset of offsets) {
+        for (const limit of limits) {
+          const input = { text: "query", offset, limit };
+          const baseline = await run(makeStore(corpus), disabled, undefined, undefined, input);
+          const reranked = await run(makeStore(corpus), enabled, success(labels), () => "key", input);
+          const baselineCount = resultIds(baseline.content).length;
+          const rerankedCount = resultIds(reranked.content).length;
+          if (baselineCount !== rerankedCount) mismatches.push(`corpus=${corpus} offset=${offset} limit=${limit}: BM25=${baselineCount}, rerank=${rerankedCount}`);
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  test("forwards caller cancellation and returns aborted fallback", async () => {
+    const store = makeStore(6);
+    const controller = new AbortController();
+    controller.abort();
+    let fetchCalls = 0;
+    globalThis.fetch = (() => { fetchCalls++; throw new Error("must not fetch"); }) as unknown as typeof fetch;
+    const preAborted = await run(store, enabled, requestRerank, () => "key", { text: "query", limit: 5 }, controller.signal);
+    expect(preAborted.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
+    expect(fetchCalls).toBe(0);
+
+    const duringRead = new AbortController();
+    globalThis.fetch = (async () => {
+      queueMicrotask(() => duringRead.abort());
+      return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const aborted = await run(store, enabled, requestRerank, () => "key", { text: "query", limit: 5 }, duringRead.signal);
+    expect(aborted.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
   });
 
   test("a page that crosses the candidate window keeps the complete BM25 page", async () => {
@@ -78,7 +153,7 @@ describe("journal_search rerank integration", () => {
     expect(exact.ranking?.status).toBe("applied");
 
     const over = await run(makeStore(100), enabled, success(labels), () => "key", { text: "query", offset: 0, limit: 51 });
-    expect(over.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
+    expect(over.ranking?.status).toBe("applied");
     expect((over.content.match(/entry-/g) ?? []).length).toBe(50);
     checkFetch();
   });
@@ -162,7 +237,9 @@ describe("journal_search rerank integration", () => {
       return { ...result, entries: selected, total: selected.length };
     } };
     let received: RerankCandidate[] = [];
-    await run(store, enabled, success(["C03", "C02", "C01"], received), () => "key", { text: "query", project: "/p", limit: 10 });
+    const response = await run(store, enabled, success(["C03", "C02", "C01"], received), () => "key", { text: "query", project: "/p", limit: 5 });
+    expect(response.ranking?.status).toBe("applied");
+    expect(received.map((candidate) => candidate.title)).toEqual(["Title 1", "Title 2", "Title 3"]);
     expect(received.map((candidate) => candidate.title)).not.toContain("Title 0");
     checkFetch();
   });
