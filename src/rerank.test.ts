@@ -34,8 +34,22 @@ describe("rerank core", () => {
   test("builds the exact request shape and key order", () => {
     const candidates = [candidate("C01")];
     const body = buildRequestBody({ model: "m", query: "q", candidates, count: 1 });
-    expect(JSON.stringify(body)).toBe(`{"model":"m","messages":[{"role":"system","content":${JSON.stringify(RERANK_SYSTEM_PROMPT)}},{"role":"user","content":"{\\"query\\":\\"q\\",\\"count\\":1,\\"candidates\\":[{\\"label\\":\\"C01\\",\\"title\\":\\"C01\\",\\"excerpt\\":\\"\\"}]}"}],"temperature":0,"max_completion_tokens":256,"stream":false}`);
+    expect(JSON.stringify(body)).toBe(`{"model":"m","messages":[{"role":"system","content":${JSON.stringify(RERANK_SYSTEM_PROMPT)}},{"role":"user","content":"{\\"query\\":\\"q\\",\\"count\\":1,\\"candidates\\":[{\\"label\\":\\"C01\\",\\"title\\":\\"C01\\",\\"excerpt\\":\\"\\"}]}"}],"temperature":0,"max_tokens":512,"stream":false}`);
     expect(RERANK_SYSTEM_PROMPT.length).toBeGreaterThan(0);
+  });
+
+  test("adds provider body controls while protecting required request fields", () => {
+    const candidates = [candidate("C01")];
+    const body = buildRequestBody({
+      model: "m", query: "q", candidates, count: 1,
+      extraBody: { reasoning_effort: "none", model: "overridden", messages: "overridden", stream: true },
+    });
+    expect(body.max_tokens).toBe(512);
+    expect("max_completion_tokens" in body).toBe(false);
+    expect(body.reasoning_effort).toBe("none");
+    expect(body.model).toBe("m");
+    expect(body.messages).toHaveLength(2);
+    expect(body.stream).toBe(false);
   });
 
   test("parses only exact distinct supplied label arrays", () => {
@@ -78,6 +92,7 @@ describe("rerank config validation", () => {
 
   test("validates present fields before disabled status", async () => {
     expect(await loadText('{"enabled":false,"baseURL":42}')).toMatchObject({ status: "invalid" });
+    expect(await loadText('{"enabled":false,"request":{"headers":{"content-type":"text/plain"}}}')).toMatchObject({ status: "invalid" });
     expect(await loadText('{"enabled":false,"baseURL":"https://x/v1","model":"m"}')).toEqual({ status: "disabled" });
     expect(await loadText('{"enabled":false,"other":true}')).toMatchObject({ status: "invalid" });
   });
@@ -85,6 +100,31 @@ describe("rerank config validation", () => {
   test("requires HTTPS and normalizes valid baseURL", async () => {
     expect(await loadText('{"enabled":true,"baseURL":"http://x/v1","model":"m"}')).toMatchObject({ status: "invalid" });
     expect(await loadText('{"enabled":true,"baseURL":"https://x/v1///","model":"m"}')).toEqual({ status: "enabled", config: { baseURL: "https://x/v1", model: "m" } });
+  });
+
+  test("accepts valid provider request headers and body controls", async () => {
+    expect(await loadText(JSON.stringify({
+      enabled: true, baseURL: "https://x/v1", model: "m",
+      request: { headers: { "x-opencode-session": "00000000-0000-4000-8000-000000000000" }, body: { reasoning_effort: "none" } },
+    }))).toEqual({ status: "enabled", config: {
+      baseURL: "https://x/v1", model: "m",
+      request: { headers: { "x-opencode-session": "00000000-0000-4000-8000-000000000000" }, body: { reasoning_effort: "none" } },
+    } });
+  });
+
+  test.each([
+    ["bad header key", { headers: { "x bad": "value" } }],
+    ["CRLF header value", { headers: { "x-test": "value\r\ninjected: yes" } }],
+    ["too many headers", { headers: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`x-${i}`, "v"])) }],
+    ["too many body fields", { body: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`x-${i}`, "v"])) }],
+    ["unknown request key", { other: true }],
+    ["forbidden authorization header", { headers: { Authorization: "Bearer override" } }],
+    ["forbidden content-type header", { headers: { "content-type": "text/plain" } }],
+    ["forbidden body key", { body: { model: "override" } }],
+    ["non-scalar body value", { body: { reasoning_effort: ["none"] } }],
+  ])("rejects invalid provider request configuration: %s", async (_name, request) => {
+    const result = await loadText(JSON.stringify({ enabled: true, baseURL: "https://x/v1", model: "m", request }));
+    expect(result.status).toBe("invalid");
   });
 
   test("missing rerank config remains disabled", async () => {

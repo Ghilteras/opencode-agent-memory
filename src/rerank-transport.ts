@@ -51,6 +51,7 @@ export async function requestRerank(args: {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  headers?: Record<string, string>;
 }): Promise<RerankOutcome> {
   if (typeof args.apiKey !== "string" || args.apiKey.length === 0) return { ok: false, reason: "missing_credential" };
   try {
@@ -84,7 +85,7 @@ export async function requestRerank(args: {
     try {
       response = await raceAbort(fetchImpl(`${args.baseURL}/chat/completions`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${args.apiKey}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${args.apiKey}`, "Content-Type": "application/json", ...args.headers },
         body: serialized,
         redirect: "error",
         signal,

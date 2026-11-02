@@ -93,6 +93,24 @@ Text search runs one MiniSearch BM25+ pass over title and body. Query terms are 
 
 Optional LLM reranking fuses the BM25 order with a listwise ranking of the BM25 top-50 candidates using reciprocal rank fusion (RRF, k=10). In a 30-task pilot, Hit@5 increased from 0.500 to 0.700, Hit@10 from 0.667 to 0.767, and MRR@10 from 0.321 to 0.528. A shuffled-candidate control also achieved Hit@5 of 0.700, and the direction of improvement survived pessimistic relevance judgments. The result was not statistically significant (p=0.070, n=30); this is preliminary evidence, not a guaranteed improvement. The pilot used one cloud call per query, costing approximately US$0.001 and taking about 2–3 seconds. Results, cost, and latency depend on the model, provider, and journal; these pilot measurements are not a benchmark of every supported configuration or a production service guarantee. This pilot was not an independent evaluation and does not establish a generalizable quality improvement.
 
+#### Provider quirks
+
+Some gateways require extra request headers. Reasoning models must be told not to reason so they return the requested labels within the completion budget. For the OpenCode inference gateway, use a stable UUID generated once:
+
+```json
+{
+  "enabled": true,
+  "baseURL": "https://opencode.ai/inference/go/openai/v1",
+  "model": "deepseek-v4.1-flash",
+  "request": {
+    "headers": { "x-opencode-session": "<a stable UUID you generate once>" },
+    "body": { "reasoning_effort": "none" }
+  }
+}
+```
+
+Without `reasoning_effort: "none"`, a reasoning model spends the entire completion budget and returns empty content; the plugin then falls back to BM25.
+
 Reranking is off by default. Without explicit enablement, journal search remains local and credential-free, with no reranking network requests. When enabled, each eligible search sends your query and the titles and excerpts of up to 50 filtered journal candidates to the HTTPS endpoint you configure. Titles are limited to 200 Unicode code points and excerpts to 600; sensitive information appearing in those fields is not automatically redacted. The plugin does not send journal paths, entry IDs, metadata, session history, or unrelated entries, and does not silently reuse OpenCode credentials. Your configured endpoint receives the dedicated API credential and processes journal content under its own policies. Reranking makes at most one request per search; failures return BM25 without retry. Requests may remain billable after timeout or cancellation.
 
 Configure reranking in `~/.config/opencode/agent-memory-rerank.json`, alongside `agent-memory.json`:

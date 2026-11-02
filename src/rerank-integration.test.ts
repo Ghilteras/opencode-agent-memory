@@ -26,6 +26,10 @@ function makeStore(count: number): JournalStore {
   };
 }
 const enabled = async () => ({ status: "enabled" as const, config: { baseURL: "https://rerank.example/v1", model: "test" } });
+const enabledWithRequest = async () => ({ status: "enabled" as const, config: {
+  baseURL: "https://rerank.example/v1", model: "test",
+  request: { headers: { "x-opencode-session": "stable-session" }, body: { reasoning_effort: "none" } },
+} });
 const disabled = async () => ({ status: "disabled" as const });
 const success = (labels: string[], seen?: RerankCandidate[]) => async (args: Parameters<typeof import("./rerank-transport").requestRerank>[0]): Promise<RerankOutcome> => {
   if (seen) seen.push(...args.candidates);
@@ -79,6 +83,17 @@ describe("journal_search rerank integration", () => {
       "entry-42", "entry-41", "entry-3", "entry-40", ...Array.from({ length: 36 }, (_, i) => `entry-${i + 4}`),
     ]);
     checkFetch();
+  });
+
+  test("forwards configured provider headers and body controls", async () => {
+    let requestArgs: Parameters<typeof requestRerank>[0] | undefined;
+    const response = await run(makeStore(4), enabledWithRequest, async (args) => {
+      requestArgs = args;
+      return { ok: true, labels: ["C04"] };
+    }, () => "key", { text: "query" });
+    expect(response.metadata?.ranking.status).toBe("applied");
+    expect(requestArgs?.headers).toEqual({ "x-opencode-session": "stable-session" });
+    expect(JSON.parse(JSON.stringify(requestArgs?.body))).toMatchObject({ reasoning_effort: "none", max_tokens: 512 });
   });
 
   test("ranking diagnostics use metadata for every outcome", async () => {

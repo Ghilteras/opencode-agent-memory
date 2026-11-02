@@ -3,7 +3,7 @@ import { requestRerank, type RerankFailureReason } from "./rerank-transport";
 import type { RerankCandidate } from "./rerank";
 
 const candidates: RerankCandidate[] = [{ label: "C01", title: "t", excerpt: "e" }];
-const body = { model: "m", messages: [], temperature: 0, max_completion_tokens: 256, stream: false };
+const body = { model: "m", messages: [], temperature: 0, max_tokens: 512, stream: false };
 const valid = () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: '["C01"]' } }] }), { status: 200 });
 const call = (fetchImpl: typeof fetch, extra: Partial<Parameters<typeof requestRerank>[0]> = {}) => requestRerank({
   baseURL: "https://provider.example/v1", apiKey: "secret", body, candidates, count: 1, fetchImpl, ...extra,
@@ -22,6 +22,20 @@ describe("rerank transport", () => {
       expect(init?.redirect).toBe("error");
       return valid();
     }) as unknown as typeof fetch);
+    expect(outcome).toEqual({ ok: true, labels: ["C01"] });
+    expect(calls).toBe(1);
+  });
+
+  test("merges configured headers into the single provider request", async () => {
+    let calls = 0;
+    const outcome = await call((async (_input: Request | URL | string, init?: RequestInit) => {
+      calls++;
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-opencode-session")).toBe("00000000-0000-4000-8000-000000000000");
+      expect(headers.get("authorization")).toBe("Bearer secret");
+      expect(headers.get("content-type")).toBe("application/json");
+      return valid();
+    }) as unknown as typeof fetch, { headers: { "x-opencode-session": "00000000-0000-4000-8000-000000000000" } });
     expect(outcome).toEqual({ ok: true, labels: ["C01"] });
     expect(calls).toBe(1);
   });

@@ -30,24 +30,35 @@ export function buildRequestBody(args: {
   query: string;
   candidates: RerankCandidate[];
   count: number;
+  extraBody?: Record<string, string | number | boolean>;
 }): {
+  [key: string]: unknown;
   model: string;
   messages: Array<{ role: "system" | "user"; content: string }>;
   temperature: 0;
-  max_completion_tokens: 256;
+  max_tokens: 512;
   stream: false;
 } {
   const count = Math.min(10, args.candidates.length);
-  return {
+  const base: {
+    model: string;
+    messages: Array<{ role: "system" | "user"; content: string }>;
+    temperature: 0;
+    max_tokens: 512;
+    stream: false;
+  } = {
     model: args.model,
     messages: [
       { role: "system", content: RERANK_SYSTEM_PROMPT },
       { role: "user", content: JSON.stringify({ query: args.query, count, candidates: args.candidates }) },
     ],
     temperature: 0,
-    max_completion_tokens: 256,
+    max_tokens: 512,
     stream: false,
   };
+  const extraBody = Object.fromEntries(Object.entries(args.extraBody ?? {}).filter(([key]) =>
+    key !== "model" && key !== "messages" && key !== "stream"));
+  return { ...base, ...extraBody, model: base.model, messages: base.messages, stream: base.stream };
 }
 
 export function parseLabels(content: unknown, candidates: RerankCandidate[], count: number): string[] | null {

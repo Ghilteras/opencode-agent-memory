@@ -3,12 +3,52 @@ import * as path from "node:path";
 
 import { loadConfig } from "./journal";
 
-export type RerankConfig = { enabled: true; baseURL: string; model: string } | { enabled: false };
+export type RerankRequestConfig = { headers?: Record<string, string>; body?: Record<string, string | number | boolean> };
+export type RerankConfig = { enabled: true; baseURL: string; model: string; request?: RerankRequestConfig } | { enabled: false };
 
 export type RerankConfigLoad =
   | { status: "disabled" }
   | { status: "invalid"; reason: string }
-  | { status: "enabled"; config: { baseURL: string; model: string } };
+  | { status: "enabled"; config: { baseURL: string; model: string; request?: RerankRequestConfig } };
+
+const forbiddenHeaders = new Set(["authorization", "content-type", "host", "content-length", "content-encoding", "transfer-encoding"]);
+const forbiddenBodyKeys = new Set(["model", "messages", "stream"]);
+
+function validateRequest(value: unknown): { valid: true; request?: RerankRequestConfig } | { valid: false } {
+  if (value === undefined) return { valid: true };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { valid: false };
+  const request = value as Record<string, unknown>;
+  if (Object.keys(request).some((key) => key !== "headers" && key !== "body")) return { valid: false };
+  const result: RerankRequestConfig = {};
+  if (request.headers !== undefined) {
+    if (request.headers === null || typeof request.headers !== "object" || Array.isArray(request.headers)) return { valid: false };
+    const headers = request.headers as Record<string, unknown>;
+    const entries = Object.entries(headers);
+    if (entries.length > 10) return { valid: false };
+    const output: Record<string, string> = {};
+    for (const [key, item] of entries) {
+      if (!/^[A-Za-z0-9-]+$/.test(key) || forbiddenHeaders.has(key.toLowerCase()) || typeof item !== "string" ||
+        item.length === 0 || item.length > 1024 || /[\r\n\0]/.test(item)) return { valid: false };
+      output[key] = item;
+    }
+    result.headers = output;
+  }
+  if (request.body !== undefined) {
+    if (request.body === null || typeof request.body !== "object" || Array.isArray(request.body)) return { valid: false };
+    const body = request.body as Record<string, unknown>;
+    const entries = Object.entries(body);
+    if (entries.length > 10) return { valid: false };
+    const output: Record<string, string | number | boolean> = Object.create(null) as Record<string, string | number | boolean>;
+    for (const [key, item] of entries) {
+      if (!/^[A-Za-z0-9_.-]+$/.test(key) || forbiddenBodyKeys.has(key) ||
+        !(typeof item === "string" || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) ||
+        (typeof item === "string" && item.length > 1024)) return { valid: false };
+      output[key] = item;
+    }
+    result.body = output;
+  }
+  return { valid: true, ...(Object.keys(result).length ? { request: result } : {}) };
+}
 
 function duplicateTopLevelKey(raw: string): string | undefined {
   const keys = new Set<string>();
@@ -71,7 +111,7 @@ export async function loadRerankConfig(configDir?: string): Promise<RerankConfig
   if (duplicate !== undefined) return { status: "invalid", reason: `duplicate config key: ${duplicate}` };
 
   const config = value as Record<string, unknown>;
-  if (Object.keys(config).some((key) => !["enabled", "baseURL", "model"].includes(key))) {
+  if (Object.keys(config).some((key) => !["enabled", "baseURL", "model", "request"].includes(key))) {
     return { status: "invalid", reason: "unknown config field" };
   }
   if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
@@ -83,6 +123,8 @@ export async function loadRerankConfig(configDir?: string): Promise<RerankConfig
   if (config.model !== undefined && typeof config.model !== "string") {
     return { status: "invalid", reason: "model must be a string" };
   }
+  const request = validateRequest(config.request);
+  if (!request.valid) return { status: "invalid", reason: "request must contain valid headers and body" };
   if (config.enabled !== true) return { status: "disabled" };
   if (typeof config.baseURL !== "string" || typeof config.model !== "string" || config.model.trim().length === 0) {
     return { status: "invalid", reason: "enabled config requires baseURL and non-empty model" };
@@ -99,5 +141,5 @@ export async function loadRerankConfig(configDir?: string): Promise<RerankConfig
   }
   const baseURL = config.baseURL.replace(/\/+$/, "");
   if (!baseURL) return { status: "invalid", reason: "baseURL is invalid" };
-  return { status: "enabled", config: { baseURL, model: config.model } };
+  return { status: "enabled", config: { baseURL, model: config.model, ...(request.request ? { request: request.request } : {}) } };
 }

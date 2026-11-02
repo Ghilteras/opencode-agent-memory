@@ -147,10 +147,11 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
               const outcome = await request({
                 baseURL: config.config.baseURL,
                 apiKey: getEnv("AGENT_MEMORY_RERANK_API_KEY") ?? "",
-                body: buildRequestBody({ model: config.config.model, query: query.text, candidates, count }),
+                body: buildRequestBody({ model: config.config.model, query: query.text, candidates, count, extraBody: config.config.request?.body }),
                 candidates,
                 count,
                 signal: toolCtx.signal,
+                headers: config.config.request?.headers,
               });
               if (!outcome.ok) {
                 ranking = { method: "bm25", status: "fallback", reason: outcome.reason };
