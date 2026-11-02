@@ -111,7 +111,7 @@ Constraints and pagination:
 - Searches without non-whitespace `text` are never reranked.
 - Enabled ordering is **not reproducible** across calls, so offset pagination is a slice of each call's ranking, not a stable snapshot.
 
-On failure, the result falls back to the ordinary BM25 page without retry, preserving its candidate count (`total`). An invalid reranking configuration also returns that BM25 page with `ranking.status: "fallback"` and `ranking.reason: "invalid_config"`; disabled or missing reranking configuration remains silent and adds no `ranking` field. Other failure reason codes are `missing_credential`, `timeout`, `transport_error`, `http_error`, `malformed_body`, `malformed_labels`, `budget_exceeded` (request/response size or completion-token limit), and `aborted` (the search was cancelled). Searches skipped without a reranking request report `no_query`, `insufficient_candidates`, or `outside_window`.
+On failure, the result falls back to the ordinary BM25 page without retry, preserving its candidate count (`total`). The diagnostic is returned in the tool result's `metadata.ranking` field (not as a top-level field): an invalid reranking configuration reports `status: "fallback"` and `reason: "invalid_config"`; disabled or missing reranking configuration remains silent and adds no `metadata`. Other failure reason codes are `missing_credential`, `timeout`, `transport_error`, `http_error`, `malformed_body`, `malformed_labels`, `budget_exceeded` (request/response size or completion-token limit), and `aborted` (the search was cancelled). Searches skipped without a reranking request report `no_query`, `insufficient_candidates`, or `outside_window` in `metadata.ranking`.
 
 ### Suggested tags
 

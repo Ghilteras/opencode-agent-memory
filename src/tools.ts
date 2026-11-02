@@ -28,7 +28,7 @@ type ToolDefinition = {
   name: string;
   description: string;
   input: JsonSchema;
-  execute(input: Record<string, unknown>, context: { agent: string; sessionID: string; signal?: AbortSignal }): Promise<{ content: string; ranking?: JournalRanking }>;
+  execute(input: Record<string, unknown>, context: { agent: string; sessionID: string; signal?: AbortSignal }): Promise<{ content: string; metadata?: { ranking: JournalRanking } }>;
 };
 type JournalRanking =
   | { method: "bm25+llm-rrf"; status: "applied"; candidateCount: number; labelCount: number; k: 10 }
@@ -175,7 +175,7 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
           const lines = result.entries.map((entry) => `${entry.id}\n  ${entry.title}${entry.tags.length ? ` [${entry.tags.join(", ")}]` : ""}\n  ${entry.created.toISOString()}`);
           return `${header}${tagsLine}\n\n${lines.join("\n\n")}`;
         })();
-      return ranking ? { content, ranking } : { content };
+      return ranking ? { content, metadata: { ranking } } : { content };
     },
   };
 }

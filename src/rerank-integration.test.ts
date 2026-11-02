@@ -72,7 +72,7 @@ describe("journal_search rerank integration", () => {
     const checkFetch = trapFetch();
     const store = makeStore(50);
     const response = await run(store, enabled, success(["C50", "C49", "C48", "C47", "C46", "C45", "C44", "C43", "C42", "C41"]), () => "key", { text: "query", limit: 50 });
-    expect(response.ranking).toEqual({ method: "bm25+llm-rrf", status: "applied", candidateCount: 50, labelCount: 10, k: 10 });
+    expect(response.metadata?.ranking).toEqual({ method: "bm25+llm-rrf", status: "applied", candidateCount: 50, labelCount: 10, k: 10 });
     expect(response.content).toContain("Found 50 candidate entries");
     expect(resultIds(response.content)).toEqual([
       "entry-49", "entry-48", "entry-47", "entry-0", "entry-46", "entry-45", "entry-1", "entry-44", "entry-43", "entry-2",
@@ -81,13 +81,38 @@ describe("journal_search rerank integration", () => {
     checkFetch();
   });
 
+  test("ranking diagnostics use metadata for every outcome", async () => {
+    const checkShape = (response: Awaited<ReturnType<typeof run>>, expected: NonNullable<Awaited<ReturnType<typeof run>>["metadata"]>["ranking"]) => {
+      expect(Object.hasOwn(response, "ranking")).toBe(false);
+      expect(response.metadata?.ranking).toEqual(expected);
+    };
+    const applied = await run(makeStore(4), enabled, success(["C04"]), () => "key", { text: "query" });
+    checkShape(applied, { method: "bm25+llm-rrf", status: "applied", candidateCount: 4, labelCount: 1, k: 10 });
+
+    const fallback = await run(makeStore(4), enabled, async () => ({ ok: false, reason: "timeout" }), () => "key", { text: "query" });
+    checkShape(fallback, { method: "bm25", status: "fallback", reason: "timeout" });
+
+    const noQuery = await run(makeStore(4), enabled, undefined, undefined, {});
+    checkShape(noQuery, { method: "bm25", status: "skipped", reason: "no_query" });
+
+    const outsideWindow = await run(makeStore(60), enabled, success(["C50"]), () => "key", { text: "query", offset: 50, limit: 1 });
+    checkShape(outsideWindow, { method: "bm25", status: "skipped", reason: "outside_window" });
+
+    const insufficient = await run(makeStore(1), enabled, success([]), () => "key", { text: "query" });
+    checkShape(insufficient, { method: "bm25", status: "skipped", reason: "insufficient_candidates" });
+
+    const disabledResult = await run(makeStore(4), disabled, undefined, undefined, { text: "query" });
+    expect(Object.hasOwn(disabledResult, "ranking")).toBe(false);
+    expect(Object.hasOwn(disabledResult, "metadata")).toBe(false);
+  });
+
   test("invalid configuration preserves BM25 results and reports fallback", async () => {
     const checkFetch = trapFetch();
     const store = makeStore(6);
     const input = { text: "query", limit: 5 };
     const baseline = await run(store, disabled, undefined, undefined, input);
     const injected = await run(store, async () => ({ status: "invalid", reason: "fixture invalid" }), undefined, undefined, input);
-    expect(injected.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
+    expect(injected.metadata?.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
     expect(resultIds(injected.content)).toEqual(resultIds(baseline.content));
     expect(injected.content).toBe(baseline.content);
     expect(injected.content).toContain("Found 6 candidate entries");
@@ -98,7 +123,7 @@ describe("journal_search rerank integration", () => {
       const actualLoader = await loadRerankConfig(dir);
       expect(actualLoader.status).toBe("invalid");
       const actual = await run(store, () => loadRerankConfig(dir), undefined, undefined, input);
-      expect(actual.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
+      expect(actual.metadata?.ranking).toEqual({ method: "bm25", status: "fallback", reason: "invalid_config" });
       expect(actual.content).toBe(baseline.content);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -121,7 +146,7 @@ describe("journal_search rerank integration", () => {
           const reranked = await run(makeStore(corpus), enabled, success(labels), () => "key", input);
           const baselineCount = resultIds(baseline.content).length;
           const rerankedCount = resultIds(reranked.content).length;
-          sawApplied ||= reranked.ranking?.status === "applied";
+          sawApplied ||= reranked.metadata?.ranking.status === "applied";
           if (baselineCount !== rerankedCount) mismatches.push(`corpus=${corpus} offset=${offset} limit=${limit}: BM25=${baselineCount}, rerank=${rerankedCount}`);
         }
       }
@@ -137,7 +162,7 @@ describe("journal_search rerank integration", () => {
     let fetchCalls = 0;
     globalThis.fetch = (() => { fetchCalls++; throw new Error("must not fetch"); }) as unknown as typeof fetch;
     const preAborted = await run(store, enabled, requestRerank, () => "key", { text: "query", limit: 5 }, controller.signal);
-    expect(preAborted.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
+    expect(preAborted.metadata?.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
     expect(fetchCalls).toBe(0);
 
     const duringRead = new AbortController();
@@ -156,7 +181,7 @@ describe("journal_search rerank integration", () => {
     }) as unknown as typeof fetch;
     const aborted = await run(store, enabled, requestRerank, () => "key", { text: "query", limit: 5 }, duringRead.signal);
     expect(bodyChunkDelivered).toBe(true);
-    expect(aborted.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
+    expect(aborted.metadata?.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
   });
 
   test("uses one search snapshot for eligible pages and never splices outside-window results", async () => {
@@ -179,7 +204,7 @@ describe("journal_search rerank integration", () => {
     const outside = sequence([firstWindow, secondResult]);
     const outsideResponse = await run(outside.store, enabled, success(["C06"]), () => "key", { text: "query", offset: 5, limit: 2 });
     expect(outside.count()).toBe(2);
-    expect(outsideResponse.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
+    expect(outsideResponse.metadata?.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
     expect(outsideResponse.content).toContain("Found 7 candidate entries");
     expect(resultIds(outsideResponse.content)).toEqual(["entry-0", "entry-1", "entry-2", "entry-3", "entry-4", "entry-5", "entry-6"]);
   });
@@ -190,7 +215,7 @@ describe("journal_search rerank integration", () => {
     const input = { text: "query", offset: 45, limit: 20 };
     const baseline = await run(store, disabled, undefined, undefined, input);
     const response = await run(store, enabled, success(["C50"]), () => "key", input);
-    expect(response.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
+    expect(response.metadata?.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
     expect(response.content).toBe(baseline.content);
     expect((response.content.match(/entry-/g) ?? []).length).toBe(20);
     checkFetch();
@@ -200,10 +225,10 @@ describe("journal_search rerank integration", () => {
     const checkFetch = trapFetch();
     const labels = Array.from({ length: 50 }, (_, i) => `C${String(50 - i).padStart(2, "0")}`);
     const exact = await run(makeStore(100), enabled, success(labels), () => "key", { text: "query", offset: 0, limit: 50 });
-    expect(exact.ranking?.status).toBe("applied");
+    expect(exact.metadata?.ranking.status).toBe("applied");
 
     const over = await run(makeStore(100), enabled, success(labels), () => "key", { text: "query", offset: 0, limit: 51 });
-    expect(over.ranking?.status).toBe("applied");
+    expect(over.metadata?.ranking.status).toBe("applied");
     expect((over.content.match(/entry-/g) ?? []).length).toBe(50);
     checkFetch();
   });
@@ -220,7 +245,7 @@ describe("journal_search rerank integration", () => {
     for (const input of [{}, { text: "" }, { text: " \t\n " }]) {
       const baseline = await run(store, disabled, undefined, undefined, input);
       const response = await run(store, enabled, request, () => "key", input);
-      expect(response.ranking).toEqual({ method: "bm25", status: "skipped", reason: "no_query" });
+      expect(response.metadata?.ranking).toEqual({ method: "bm25", status: "skipped", reason: "no_query" });
       expect(response.content).toBe(baseline.content);
     }
     expect(calls).toBe(0);
@@ -240,7 +265,7 @@ describe("journal_search rerank integration", () => {
 
     expect(resultIds(response.content)).toEqual(resultIds(baseline.content));
     expect(resultTotal(response.content)).toBe(resultTotal(baseline.content));
-    expect(response.ranking).toMatchObject({ reason: "no_query" });
+    expect(response.metadata?.ranking).toMatchObject({ reason: "no_query" });
     expect(calls).toBe(0);
   });
 
@@ -251,7 +276,7 @@ describe("journal_search rerank integration", () => {
       return { ok: true, labels: ["C100"] };
     };
     const response = await run(makeStore(100), enabled, request, () => "key", { text: "query", offset: 0, limit: 5 });
-    expect(response.ranking?.status).toBe("applied");
+    expect(response.metadata?.ranking.status).toBe("applied");
     expect(calls).toBe(1);
   });
 
@@ -263,7 +288,7 @@ describe("journal_search rerank integration", () => {
       return { ok: true, labels: ["C08"] };
     };
     const response = await run(makeStore(8), enabled, request, () => "key", { text: "query", limit: 8 });
-    expect(response.ranking?.status).toBe("applied");
+    expect(response.metadata?.ranking.status).toBe("applied");
     expect(calls).toBe(1);
     checkFetch();
   });
@@ -272,7 +297,7 @@ describe("journal_search rerank integration", () => {
     const checkFetch = trapFetch();
     const request = async (): Promise<RerankOutcome> => ({ ok: false, reason });
     const response = await run(makeStore(6), enabled, request, () => "key", { text: "query", limit: 6 });
-    expect(response.ranking).toEqual({ method: "bm25", status: "fallback", reason });
+    expect(response.metadata?.ranking).toEqual({ method: "bm25", status: "fallback", reason });
     expect(response.content.indexOf("entry-0")).toBeLessThan(response.content.indexOf("entry-5"));
     checkFetch();
   });
@@ -282,11 +307,11 @@ describe("journal_search rerank integration", () => {
     const store = makeStore(60);
     const labels = Array.from({ length: 50 }, (_, i) => `C${String(50 - i).padStart(2, "0")}`);
     const page = await run(store, enabled, success(labels), () => "key", { text: "query", offset: 5, limit: 5 });
-    expect(page.ranking?.status).toBe("applied");
+    expect(page.metadata?.ranking.status).toBe("applied");
     expect((page.content.match(/entry-/g) ?? []).length).toBe(5);
     expect(resultIds(page.content)).toEqual(["entry-47", "entry-3", "entry-46", "entry-4", "entry-45"]);
     const out = await run(store, enabled, success(labels), () => "key", { text: "query", offset: 60, limit: 5 });
-    expect(out.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
+    expect(out.metadata?.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
     expect(out.content).toBe("No journal entries found.\nTags in use: include");
     expect(out.content).not.toContain("Found 60");
     checkFetch();
@@ -296,11 +321,11 @@ describe("journal_search rerank integration", () => {
     const checkFetch = trapFetch();
     for (const count of [0, 1]) {
       const response = await run(makeStore(count), enabled, success([]), () => "key", { text: "query" });
-      expect(response.ranking).toEqual({ method: "bm25", status: "skipped", reason: "insufficient_candidates" });
+      expect(response.metadata?.ranking).toEqual({ method: "bm25", status: "skipped", reason: "insufficient_candidates" });
     }
     let received: RerankCandidate[] = [];
     const response = await run(makeStore(51), enabled, success(Array.from({ length: 10 }, (_, i) => `C${String(10 - i).padStart(2, "0")}`), received), () => "key", { text: "query", limit: 50 });
-    expect(response.ranking).toMatchObject({ status: "applied", candidateCount: 50 });
+    expect(response.metadata?.ranking).toMatchObject({ status: "applied", candidateCount: 50 });
     expect(received).toHaveLength(50);
     checkFetch();
   });
@@ -317,7 +342,7 @@ describe("journal_search rerank integration", () => {
     } };
     let received: RerankCandidate[] = [];
     const response = await run(store, enabled, success(["C03", "C02", "C01"], received), () => "key", { text: "query", project: "/p", limit: 5 });
-    expect(response.ranking?.status).toBe("applied");
+    expect(response.metadata?.ranking.status).toBe("applied");
     expect(received.map((candidate) => candidate.title)).toEqual(["Title 1", "Title 2", "Title 3"]);
     expect(received.map((candidate) => candidate.title)).not.toContain("Title 0");
     checkFetch();
