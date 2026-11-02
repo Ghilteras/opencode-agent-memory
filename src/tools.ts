@@ -124,27 +124,28 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
         result = await store.search(query);
         ranking = { method: "bm25", status: "fallback", reason: "invalid_config" };
       } else {
-        const [ordinary, window] = await Promise.all([
-          store.search(query),
-          store.search({ ...query, limit: RERANK_WINDOW, offset: 0 }),
-        ]);
-        result = ordinary;
+        const win = await store.search({ ...query, limit: RERANK_WINDOW, offset: 0 });
+        const total = win.total;
+        const windowSize = win.entries.length;
         if (!query.text?.trim()) {
+          result = { ...win, entries: win.entries.slice(offset, offset + limit), total, allTags: win.allTags };
           ranking = { method: "bm25", status: "skipped", reason: "no_query" };
-        } else if (window.entries.length < 2) {
+        } else if (windowSize < 2) {
+          result = { ...win, entries: win.entries.slice(offset, offset + limit), total, allTags: win.allTags };
           ranking = { method: "bm25", status: "skipped", reason: "insufficient_candidates" };
-        } else if (offset >= window.entries.length) {
-          ranking = { method: "bm25", status: "skipped", reason: "outside_window" };
-        } else if (offset + limit > window.entries.length && ordinary.total > window.entries.length) {
+        } else if (offset + limit > windowSize && total > windowSize) {
+          // Fetch the requested page separately precisely to avoid mixing search snapshots.
+          result = await store.search(query);
           ranking = { method: "bm25", status: "skipped", reason: "outside_window" };
         } else {
-          const candidates = buildCandidates(window.entries);
-          const count = Math.min(10, window.entries.length);
+          result = { ...win, entries: win.entries.slice(offset, offset + limit), total, allTags: win.allTags };
+          const candidates = buildCandidates(win.entries);
+          const count = Math.min(10, windowSize);
           try {
             const outcome = await request({
               baseURL: config.config.baseURL,
               apiKey: getEnv("AGENT_MEMORY_RERANK_API_KEY") ?? "",
-              body: buildRequestBody({ model: config.config.model, query: query.text ?? "", candidates, count }),
+              body: buildRequestBody({ model: config.config.model, query: query.text, candidates, count }),
               candidates,
               count,
               signal: toolCtx.signal,
@@ -153,10 +154,10 @@ export function JournalSearch(store: JournalStore, deps: RerankDependencies = {}
               ranking = { method: "bm25", status: "fallback", reason: outcome.reason };
             } else {
               const fusedLabels = fuseRanks(candidates, outcome.labels, RERANK_K);
-              const byLabel = new Map(candidates.map((candidate, index) => [candidate.label, window.entries[index]!]));
+              const byLabel = new Map(candidates.map((candidate, index) => [candidate.label, win.entries[index]!]));
               const fused = fusedLabels.map((label) => byLabel.get(label)!);
-              result = { ...ordinary, entries: fused.slice(offset, offset + limit) };
-              ranking = { method: "bm25+llm-rrf", status: "applied", candidateCount: window.entries.length, labelCount: outcome.labels.length, k: RERANK_K };
+              result = { ...win, entries: fused.slice(offset, offset + limit), total, allTags: win.allTags };
+              ranking = { method: "bm25+llm-rrf", status: "applied", candidateCount: windowSize, labelCount: outcome.labels.length, k: RERANK_K };
             }
           } catch {
             ranking = { method: "bm25", status: "fallback", reason: "transport_error" };

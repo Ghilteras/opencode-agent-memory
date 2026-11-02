@@ -100,6 +100,7 @@ describe("journal_search rerank integration", () => {
     const corpora = [0, 1, 6, 20, 50, 51, 100];
     const labels = Array.from({ length: 50 }, (_, i) => `C${String(50 - i).padStart(2, "0")}`);
     const mismatches: string[] = [];
+    let sawApplied = false;
     for (const corpus of corpora) {
       for (const offset of offsets) {
         for (const limit of limits) {
@@ -108,11 +109,13 @@ describe("journal_search rerank integration", () => {
           const reranked = await run(makeStore(corpus), enabled, success(labels), () => "key", input);
           const baselineCount = resultIds(baseline.content).length;
           const rerankedCount = resultIds(reranked.content).length;
+          sawApplied ||= reranked.ranking?.status === "applied";
           if (baselineCount !== rerankedCount) mismatches.push(`corpus=${corpus} offset=${offset} limit=${limit}: BM25=${baselineCount}, rerank=${rerankedCount}`);
         }
       }
     }
     expect(mismatches).toEqual([]);
+    expect(sawApplied).toBe(true);
   });
 
   test("forwards caller cancellation and returns aborted fallback", async () => {
@@ -126,12 +129,47 @@ describe("journal_search rerank integration", () => {
     expect(fetchCalls).toBe(0);
 
     const duringRead = new AbortController();
+    let bodyChunkDelivered = false;
     globalThis.fetch = (async () => {
-      queueMicrotask(() => duringRead.abort());
-      return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"choices":')); },
+        pull() {
+          if (!bodyChunkDelivered) {
+            bodyChunkDelivered = true;
+            duringRead.abort();
+          }
+        },
+      });
+      return new Response(stream, { status: 200 });
     }) as unknown as typeof fetch;
     const aborted = await run(store, enabled, requestRerank, () => "key", { text: "query", limit: 5 }, duringRead.signal);
+    expect(bodyChunkDelivered).toBe(true);
     expect(aborted.ranking).toEqual({ method: "bm25", status: "fallback", reason: "aborted" });
+  });
+
+  test("uses one search snapshot for eligible pages and never splices outside-window results", async () => {
+    const sequence = (results: Array<Awaited<ReturnType<JournalStore["search"]>>>) => {
+      let calls = 0;
+      const base = makeStore(7);
+      const store: JournalStore = { ...base, search: async () => results[calls++]! };
+      return { store, count: () => calls };
+    };
+    const first = makeStore(6);
+    const firstResult = await first.search({ text: "query", limit: 50, offset: 0 });
+    const secondResult = await makeStore(7).search({ text: "query", limit: 50, offset: 0 });
+    const eligible = sequence([firstResult, secondResult]);
+    const eligibleResponse = await run(eligible.store, enabled, success(["C06"]), () => "key", { text: "query", limit: 2 });
+    expect(eligible.count()).toBe(1);
+    expect(eligibleResponse.content).toContain("Found 6 candidate entries");
+    expect(resultIds(eligibleResponse.content)).toEqual(["entry-5", "entry-0"]);
+
+    const firstWindow = { ...firstResult, total: 7 };
+    const outside = sequence([firstWindow, secondResult]);
+    const outsideResponse = await run(outside.store, enabled, success(["C06"]), () => "key", { text: "query", offset: 5, limit: 2 });
+    expect(outside.count()).toBe(2);
+    expect(outsideResponse.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
+    expect(outsideResponse.content).toContain("Found 7 candidate entries");
+    expect(resultIds(outsideResponse.content)).toEqual(["entry-0", "entry-1", "entry-2", "entry-3", "entry-4", "entry-5", "entry-6"]);
   });
 
   test("a page that crosses the candidate window keeps the complete BM25 page", async () => {
@@ -206,6 +244,7 @@ describe("journal_search rerank integration", () => {
     const page = await run(store, enabled, success(labels), () => "key", { text: "query", offset: 5, limit: 5 });
     expect(page.ranking?.status).toBe("applied");
     expect((page.content.match(/entry-/g) ?? []).length).toBe(5);
+    expect(resultIds(page.content)).toEqual(["entry-47", "entry-3", "entry-46", "entry-4", "entry-45"]);
     const out = await run(store, enabled, success(labels), () => "key", { text: "query", offset: 60, limit: 5 });
     expect(out.ranking).toEqual({ method: "bm25", status: "skipped", reason: "outside_window" });
     expect(out.content).toBe("No journal entries found.\nTags in use: include");

@@ -10,6 +10,41 @@ export type RerankConfigLoad =
   | { status: "invalid"; reason: string }
   | { status: "enabled"; config: { baseURL: string; model: string } };
 
+function duplicateTopLevelKey(raw: string): string | undefined {
+  const keys = new Set<string>();
+  let objectDepth = 0;
+  let arrayDepth = 0;
+  for (let i = 0; i < raw.length;) {
+    const char = raw[i]!;
+    if (char === '"') {
+      const start = i++;
+      let escaped = false;
+      while (i < raw.length) {
+        const current = raw[i++]!;
+        if (escaped) escaped = false;
+        else if (current === "\\") escaped = true;
+        else if (current === '"') break;
+      }
+      if (objectDepth === 1 && arrayDepth === 0) {
+        let next = i;
+        while (/\s/.test(raw[next] ?? "")) next++;
+        if (raw[next] === ":") {
+          const key = JSON.parse(raw.slice(start, i)) as string;
+          if (keys.has(key)) return key;
+          keys.add(key);
+        }
+      }
+      continue;
+    }
+    if (char === "{") objectDepth++;
+    else if (char === "}") objectDepth--;
+    else if (char === "[") arrayDepth++;
+    else if (char === "]") arrayDepth--;
+    i++;
+  }
+  return undefined;
+}
+
 export async function loadRerankConfig(configDir?: string): Promise<RerankConfigLoad> {
   const existingConfig = await loadConfig(configDir);
   const configPath = path.resolve(path.dirname(existingConfig.configPath), "agent-memory-rerank.json");
@@ -32,12 +67,21 @@ export async function loadRerankConfig(configDir?: string): Promise<RerankConfig
     return { status: "invalid", reason: "config must be an object" };
   }
 
+  const duplicate = duplicateTopLevelKey(raw);
+  if (duplicate !== undefined) return { status: "invalid", reason: `duplicate config key: ${duplicate}` };
+
   const config = value as Record<string, unknown>;
   if (Object.keys(config).some((key) => !["enabled", "baseURL", "model"].includes(key))) {
     return { status: "invalid", reason: "unknown config field" };
   }
   if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
     return { status: "invalid", reason: "enabled must be a boolean" };
+  }
+  if (config.baseURL !== undefined && typeof config.baseURL !== "string") {
+    return { status: "invalid", reason: "baseURL must be a string" };
+  }
+  if (config.model !== undefined && typeof config.model !== "string") {
+    return { status: "invalid", reason: "model must be a string" };
   }
   if (config.enabled !== true) return { status: "disabled" };
   if (typeof config.baseURL !== "string" || typeof config.model !== "string" || config.model.trim().length === 0) {
