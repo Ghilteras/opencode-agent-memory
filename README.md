@@ -20,7 +20,7 @@ Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](ht
 - **Local lexical search** - Find candidate entries by matching query words in titles and bodies
 - **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
 - **Guidance in tool descriptions** - Journal usage guidance lives in the descriptions of the journal tools, so an agent sees it only when it is allowed to call them
-- **No data leaves the machine** - Embeddings run locally
+- **By default, no data leaves your machine** - Embeddings run locally; optional LLM reranking sends selected journal content only when explicitly enabled and configured.
 
 ## Requirements
 
@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.0.2"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.1.0"]
 }
 ```
 
@@ -88,6 +88,30 @@ Body text...
 ### Text search
 
 Text search runs one MiniSearch BM25+ pass over title and body. Query terms are OR-matched, with native score order and a deterministic tie-break by creation time and ID. This is keyword matching, not a claim of semantic relevance: results are candidates for the agent to inspect. Matching works across languages by matching literal words, not by meaning. When a query has no tokenizable terms (for example, `!!!`), search falls back to case-insensitive exact-substring matching over title and body. The retained index is reused while the ordered candidate-entry ID list is unchanged, avoiding repeated index construction. Embedding sidecars are still written in the versioned `{ v: 2, model, dimension, vector }` format for compatibility, but search does not read them.
+
+### Optional LLM reranking
+
+Optional LLM reranking fuses the BM25 order with a listwise ranking of the BM25 top-50 candidates using reciprocal rank fusion (RRF, k=10). In a 30-task pilot, Hit@5 increased from 0.500 to 0.700, Hit@10 from 0.667 to 0.767, and MRR@10 from 0.321 to 0.528. A shuffled-candidate control also achieved Hit@5 of 0.700, and the direction of improvement survived pessimistic relevance judgments. The result was not statistically significant (p=0.070, n=30); this is preliminary evidence, not a guaranteed improvement. The pilot used one cloud call per query, costing approximately US$0.001 and taking about 2–3 seconds. Results, cost, and latency depend on the model, provider, and journal; these pilot measurements are not a benchmark of every supported configuration or a production service guarantee.
+
+Reranking is off by default. Without explicit enablement, journal search remains local and credential-free, with no reranking network requests. When enabled, each eligible search sends your query and the titles and excerpts of up to 50 filtered journal candidates to the HTTPS endpoint you configure. Titles are limited to 200 Unicode code points and excerpts to 600; sensitive information appearing in those fields is not automatically redacted. The plugin does not send journal paths, entry IDs, metadata, session history, or unrelated entries, and does not silently reuse OpenCode credentials. Your configured endpoint receives the dedicated API credential and processes journal content under its own policies. Reranking makes at most one request per search; failures return BM25 without retry. Requests may remain billable after timeout or cancellation.
+
+Configure reranking in `~/.config/opencode/agent-memory-rerank.json`, alongside `agent-memory.json`:
+
+```json
+{ "enabled": true, "baseURL": "https://your-provider.example/v1", "model": "your-model-id" }
+```
+
+Set `AGENT_MEMORY_RERANK_API_KEY` in the environment of the process that runs OpenCode. The credential does not belong in the config file: do not use `OPENAI_API_KEY` or OpenCode credentials.
+
+Constraints and pagination:
+
+- HTTPS only; plaintext `http` is rejected, including for localhost.
+- One request per search, with a 5-second deadline, request and response limits of 65,536 bytes each, 256 completion tokens, and no retries.
+- Only the first 50 candidates can move; `total` is unchanged. A page is reranked only when it fits entirely inside that top-50 window; other pages keep plain BM25 order.
+- Searches without non-whitespace `text` are never reranked.
+- Enabled ordering is **not reproducible** across calls, so offset pagination is a slice of each call's ranking, not a stable snapshot.
+
+On failure, the result falls back to BM25 without retry. Failure reason codes are: `invalid_config` (invalid or non-HTTPS endpoint), `missing_credential`, `timeout`, `transport_error`, `http_error`, `malformed_body`, `malformed_labels`, `budget_exceeded` (request/response size or completion-token limit), and `aborted` (the search was cancelled). Searches skipped without a reranking request report `no_query`, `insufficient_candidates`, or `outside_window`.
 
 ### Suggested tags
 
