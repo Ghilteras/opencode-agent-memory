@@ -16,14 +16,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error("request aborted"));
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      complete();
+    };
+    const onAbort = () => finish(() => reject(new Error("request aborted")));
     signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
   });
+}
+
+function ignoreCleanup(cleanup: PromiseLike<unknown> | void): void {
+  try {
+    if (cleanup) void Promise.resolve(cleanup).catch(() => {});
+  } catch {
+    // Cleanup must not delay or replace the transport outcome.
+  }
 }
 
 export async function requestRerank(args: {
@@ -78,19 +94,39 @@ export async function requestRerank(args: {
       if (args.signal?.aborted) return { ok: false, reason: "aborted" };
       return { ok: false, reason: "transport_error" };
     }
-    if (!response.ok) return { ok: false, reason: "http_error" };
+    if (!response.ok) {
+      try {
+        const errorReader = response.body?.getReader();
+        if (errorReader) ignoreCleanup(errorReader.cancel());
+      } catch {
+        // Cleanup must not delay or replace the transport outcome.
+      }
+      return { ok: false, reason: "http_error" };
+    }
 
     if (!response.body) return { ok: false, reason: "malformed_body" };
-    const reader = response.body.getReader();
+    type ResponseReader = {
+      read(): Promise<{ done: false; value: Uint8Array } | { done: true; value?: undefined }>;
+      cancel(): Promise<void>;
+    };
+    let reader: ResponseReader | undefined = response.body.getReader() as ResponseReader;
     const chunks: Uint8Array[] = [];
     let total = 0;
     try {
       while (true) {
-        const { done, value } = await raceAbort(reader.read(), signal);
+        const currentReader = reader;
+        if (!currentReader) return { ok: false, reason: "transport_error" };
+        const { done, value } = await raceAbort(currentReader.read(), signal);
         if (done) break;
         total += value.byteLength;
         if (total > MAX_BYTES) {
-          await reader.cancel().catch(() => {});
+          controller.abort();
+          reader = undefined;
+          try {
+            ignoreCleanup(currentReader.cancel());
+          } catch {
+            // Cleanup must not delay or replace the transport outcome.
+          }
           return { ok: false, reason: "budget_exceeded" };
         }
         chunks.push(value);

@@ -70,6 +70,78 @@ describe("rerank transport", () => {
     expect(result).toEqual({ ok: false, reason: "budget_exceeded" });
   });
 
+  test("returns promptly when cancellation of an oversized response never settles", async () => {
+    let cancelCalls = 0;
+    const reader = {
+      reads: 0,
+      async read() {
+        this.reads++;
+        return this.reads === 1
+          ? { done: false, value: new Uint8Array(40000) }
+          : { done: false, value: new Uint8Array(30000) };
+      },
+      cancel() {
+        cancelCalls++;
+        return new Promise<void>(() => {});
+      },
+    };
+    const response = { ok: true, body: { getReader: () => reader } } as unknown as Response;
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("requestRerank did not complete within 2 seconds")), 2000);
+    });
+    const result = await Promise.race([call((async () => response) as unknown as typeof fetch), timeout]);
+    expect(result).toEqual({ ok: false, reason: "budget_exceeded" });
+    expect(cancelCalls).toBe(1);
+  });
+
+  test("swallows rejecting cancellation without an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let reads = 0;
+      const reader = {
+        async read() {
+          reads++;
+          return reads === 1
+            ? { done: false, value: new Uint8Array(40000) }
+            : { done: false, value: new Uint8Array(30000) };
+        },
+        cancel() { return Promise.reject(new Error("boom")); },
+      };
+      const response = { ok: true, body: { getReader: () => reader } } as unknown as Response;
+      const result = await call((async () => response) as unknown as typeof fetch);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(result).toEqual({ ok: false, reason: "budget_exceeded" });
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("returns promptly on HTTP errors when body cancellation never settles", async () => {
+    let cancelCalls = 0;
+    const response = {
+      ok: false,
+      body: {
+        getReader() {
+          return {
+            cancel() {
+              cancelCalls++;
+              return new Promise<void>(() => {});
+            },
+          };
+        },
+      },
+    } as unknown as Response;
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("HTTP error handling did not complete within 2 seconds")), 2000);
+    });
+    const result = await Promise.race([call((async () => response) as unknown as typeof fetch), timeout]);
+    expect(result).toEqual({ ok: false, reason: "http_error" });
+    expect(cancelCalls).toBe(1);
+  });
+
   test("rejects oversized request without sending and rejects redirects", async () => {
     let calls = 0;
     const oversized = await call((async () => { calls++; return valid(); }) as unknown as typeof fetch, { body: "x".repeat(65537) });
