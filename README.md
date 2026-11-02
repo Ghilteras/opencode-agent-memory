@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.1.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.2.0"]
 }
 ```
 
@@ -124,8 +124,8 @@ Set `AGENT_MEMORY_RERANK_API_KEY` in the environment of the process that runs Op
 Constraints and pagination:
 
 - HTTPS only; plaintext `http` is rejected, including for localhost.
-- One request per search, with a 5-second deadline, request and response limits of 65,536 bytes each, 512 completion tokens, and no retries.
-- Providers that require `max_completion_tokens` instead of `max_tokens` cannot be used: `request.body` can add or override base fields, but cannot remove them.
+- One request per search, with a 5-second deadline, request and response limits of 65,536 bytes each, 512 completion tokens by default (overridable via `request.body`), and no retries.
+- Providers that require `max_completion_tokens` instead of `max_tokens` cannot be used: `request.body` can override `temperature` and `max_tokens` only; `model`, `messages`, and `stream` are protected and cannot be replaced.
 - Only the first 50 candidates can move; `total` is unchanged. A page is reranked only when it fits entirely inside that top-50 window; other pages keep plain BM25 order.
 - Searches without non-whitespace `text` are never reranked.
 - Enabled ordering is **not reproducible** across calls, so offset pagination is a slice of each call's ranking, not a stable snapshot.
