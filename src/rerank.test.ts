@@ -90,6 +90,23 @@ describe("rerank config validation", () => {
     if (result.status === "invalid") expect(result.reason).toContain("enabled");
   });
 
+  test("rejects duplicate request header keys and reports the duplicate", async () => {
+    const result = await loadText('{"enabled":false,"request":{"headers":{"x-opencode-session":"one","x-opencode-session":"two"}}}');
+    expect(result.status).toBe("invalid");
+    if (result.status === "invalid") expect(result.reason).toContain("x-opencode-session");
+  });
+
+  test("rejects duplicate request body keys and reports the duplicate", async () => {
+    const result = await loadText('{"enabled":false,"request":{"body":{"reasoning_effort":"low","reasoning_effort":"none"}}}');
+    expect(result.status).toBe("invalid");
+    if (result.status === "invalid") expect(result.reason).toContain("reasoning_effort");
+  });
+
+  test("accepts non-duplicated nested request objects", async () => {
+    expect(await loadText('{"enabled":false,"request":{"headers":{"x-opencode-session":"one"},"body":{"reasoning_effort":"none"}}}'))
+      .toEqual({ status: "disabled" });
+  });
+
   test("validates present fields before disabled status", async () => {
     expect(await loadText('{"enabled":false,"baseURL":42}')).toMatchObject({ status: "invalid" });
     expect(await loadText('{"enabled":false,"request":{"headers":{"content-type":"text/plain"}}}')).toMatchObject({ status: "invalid" });

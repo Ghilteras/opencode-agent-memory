@@ -51,8 +51,7 @@ function validateRequest(value: unknown): { valid: true; request?: RerankRequest
 }
 
 function duplicateTopLevelKey(raw: string): string | undefined {
-  const keys = new Set<string>();
-  let objectDepth = 0;
+  const objects: { path: string[]; keys: Set<string>; pendingKey?: string }[] = [];
   let arrayDepth = 0;
   for (let i = 0; i < raw.length;) {
     const char = raw[i]!;
@@ -65,19 +64,26 @@ function duplicateTopLevelKey(raw: string): string | undefined {
         else if (current === "\\") escaped = true;
         else if (current === '"') break;
       }
-      if (objectDepth === 1 && arrayDepth === 0) {
-        let next = i;
-        while (/\s/.test(raw[next] ?? "")) next++;
-        if (raw[next] === ":") {
-          const key = JSON.parse(raw.slice(start, i)) as string;
-          if (keys.has(key)) return key;
-          keys.add(key);
+      const current = objects.at(-1);
+      let next = i;
+      while (/\s/.test(raw[next] ?? "")) next++;
+      if (current && raw[next] === ":") {
+        const key = JSON.parse(raw.slice(start, i)) as string;
+        if (arrayDepth === 0 && (current.path.length === 0 ||
+          (current.path.length === 2 && current.path[0] === "request" &&
+            (current.path[1] === "headers" || current.path[1] === "body")))) {
+          if (current.keys.has(key)) return key;
+          current.keys.add(key);
         }
+        current.pendingKey = key;
       }
       continue;
     }
-    if (char === "{") objectDepth++;
-    else if (char === "}") objectDepth--;
+    if (char === "{") {
+      const parent = objects.at(-1);
+      objects.push({ path: parent ? [...parent.path, parent.pendingKey ?? ""] : [], keys: new Set() });
+      if (parent) parent.pendingKey = undefined;
+    } else if (char === "}") objects.pop();
     else if (char === "[") arrayDepth++;
     else if (char === "]") arrayDepth--;
     i++;
