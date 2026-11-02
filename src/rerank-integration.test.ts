@@ -10,7 +10,7 @@ import { requestRerank, type RerankOutcome } from "./rerank-transport";
 
 const now = new Date("2026-01-01T00:00:00.000Z");
 function makeEntry(index: number, project = "/p", tags = ["include"]): JournalEntry {
-  return { id: `entry-${index}`, title: `Title ${index}`, project, model: "m", provider: "p", agent: "a", sessionId: "s", created: new Date(now.getTime() + index), tags, body: `Body ${index}`, filePath: `/tmp/${index}.md` };
+  return { id: `entry-${index}`, title: `Title ${index}`, project, model: "m", provider: "p", agent: "a", sessionId: "s", created: new Date(now.getTime() + index), tags, body: `Body ${index} query`, filePath: `/tmp/${index}.md` };
 }
 function makeStore(count: number): JournalStore {
   const all = Array.from({ length: count }, (_, i) => makeEntry(i));
@@ -36,6 +36,18 @@ const run = (store: JournalStore, loadConfig: () => Promise<RerankConfigLoad>, r
 function resultIds(content: string): string[] {
   return [...content.matchAll(/\b(entry-\d+)\b/g)].map((match) => match[1]!);
 }
+
+function resultTotal(content: string): number {
+  const match = content.match(/Found (\d+) candidate entries/);
+  if (!match) throw new Error(`Missing result total in content: ${content}`);
+  return Number(match[1]);
+}
+
+const noQueryCases = ([undefined, "", "   "] as const).flatMap((text) =>
+  [0, 5, 45, 49, 50, 60].flatMap((offset) =>
+    [1, 5, 20, 50].map((limit) => ({ text, offset, limit })),
+  ),
+);
 
 describe("journal_search rerank integration", () => {
   const originalFetch = globalThis.fetch;
@@ -213,6 +225,34 @@ describe("journal_search rerank integration", () => {
     }
     expect(calls).toBe(0);
     checkFetch();
+  });
+
+  test.each(noQueryCases)("no-query pagination matches BM25 for text=$text offset=$offset limit=$limit", async ({ text, offset, limit }) => {
+    const store = makeStore(100);
+    let calls = 0;
+    const request = async (): Promise<RerankOutcome> => {
+      calls++;
+      return { ok: true, labels: ["C100"] };
+    };
+    const input = { text, offset, limit };
+    const baseline = await run(store, disabled, undefined, undefined, input);
+    const response = await run(store, enabled, request, () => "key", input);
+
+    expect(resultIds(response.content)).toEqual(resultIds(baseline.content));
+    expect(resultTotal(response.content)).toBe(resultTotal(baseline.content));
+    expect(response.ranking).toMatchObject({ reason: "no_query" });
+    expect(calls).toBe(0);
+  });
+
+  test("text query positive control still reranks over a 100-entry corpus", async () => {
+    let calls = 0;
+    const request = async (): Promise<RerankOutcome> => {
+      calls++;
+      return { ok: true, labels: ["C100"] };
+    };
+    const response = await run(makeStore(100), enabled, request, () => "key", { text: "query", offset: 0, limit: 5 });
+    expect(response.ranking?.status).toBe("applied");
+    expect(calls).toBe(1);
   });
 
   test("a text-bearing search still reranks", async () => {
