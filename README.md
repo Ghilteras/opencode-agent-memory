@@ -125,7 +125,7 @@ Constraints and pagination:
 
 - HTTPS only; plaintext `http` is rejected, including for localhost.
 - One request per search, with a 5-second deadline, request and response limits of 65,536 bytes each, 512 completion tokens by default (overridable via `request.body`), and no retries.
-- Providers that require `max_completion_tokens` instead of `max_tokens` cannot be used: `request.body` can override `temperature` and `max_tokens` only; `model`, `messages`, and `stream` are protected and cannot be replaced.
+- `request.body` may add or override any scalar field except `model`, `messages`, and `stream` (up to 10 fields; for example `reasoning_effort`, `temperature`, or `max_tokens`). The plugin always sends `max_tokens` (512 by default), so a provider that requires `max_completion_tokens` instead of `max_tokens` cannot be used.
 - Only the first 50 candidates can move; `total` is unchanged. A page is reranked only when it fits entirely inside that top-50 window; other pages keep plain BM25 order.
 - Searches without non-whitespace `text` are never reranked.
 - Enabled ordering is **not reproducible** across calls, so offset pagination is a slice of each call's ranking, not a stable snapshot.
