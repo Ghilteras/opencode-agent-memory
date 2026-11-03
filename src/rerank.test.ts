@@ -17,13 +17,13 @@ const candidate = (label: string): RerankCandidate => ({ label, title: label, ex
 describe("rerank core", () => {
   test("builds positional labels and truncates title/excerpt by Unicode code points", () => {
     const title = "😀".repeat(200) + "X";
-    const excerpt = "界".repeat(601);
+    const excerpt = "😀".repeat(200) + "X";
     const candidates = buildCandidates([{ title, body: excerpt }, { title: "second", body: "b" }]);
     expect(candidates.map(({ label }) => label)).toEqual(["C01", "C02"]);
     expect(Array.from(candidates[0]!.title)).toHaveLength(200);
     expect(candidates[0]!.title).toBe("😀".repeat(200));
-    expect(Array.from(candidates[0]!.excerpt)).toHaveLength(600);
-    expect(candidates[0]!.excerpt).toBe("界".repeat(600));
+    expect(Array.from(candidates[0]!.excerpt)).toHaveLength(200);
+    expect(candidates[0]!.excerpt).toBe("😀".repeat(200));
   });
 
   test("excludes YAML frontmatter from excerpt", () => {
@@ -32,10 +32,31 @@ describe("rerank core", () => {
   });
 
   test("builds the exact request shape and key order", () => {
-    const candidates = [candidate("C01")];
+    const excerpt = "界".repeat(200);
+    const candidates = [{ label: "C01", title: "title", excerpt }];
     const body = buildRequestBody({ model: "m", query: "q", candidates, count: 1 });
-    expect(JSON.stringify(body)).toBe(`{"model":"m","messages":[{"role":"system","content":${JSON.stringify(RERANK_SYSTEM_PROMPT)}},{"role":"user","content":"{\\"query\\":\\"q\\",\\"count\\":1,\\"candidates\\":[{\\"label\\":\\"C01\\",\\"title\\":\\"C01\\",\\"excerpt\\":\\"\\"}]}"}],"temperature":0,"max_tokens":512,"stream":false}`);
+    const expectedUserContent = JSON.stringify({ query: "q", count: 1, candidates: [{ label: "C01", title: "title", excerpt }] });
+    expect(JSON.stringify(body)).toBe(JSON.stringify({
+      model: "m",
+      messages: [
+        { role: "system", content: RERANK_SYSTEM_PROMPT },
+        { role: "user", content: expectedUserContent },
+      ],
+      temperature: 0,
+      max_tokens: 512,
+      stream: false,
+    }));
     expect(RERANK_SYSTEM_PROMPT.length).toBeGreaterThan(0);
+  });
+
+  test("keeps a serialized 50-candidate rerank request under 20,000 bytes", () => {
+    const candidates = buildCandidates(Array.from({ length: 50 }, (_, index) => ({
+      title: `Candidate ${index + 1}`,
+      body: "x".repeat(1_000),
+    })));
+    const body = buildRequestBody({ model: "m", query: "representative query", candidates, count: 10 });
+    expect(candidates).toHaveLength(50);
+    expect(Buffer.byteLength(JSON.stringify(body), "utf8")).toBeLessThan(20_000);
   });
 
   test("adds provider body controls while protecting required request fields", () => {

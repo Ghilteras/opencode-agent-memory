@@ -21,7 +21,7 @@ export function buildCandidates(
   return items.slice(0, Math.min(RERANK_WINDOW, Math.max(0, limit))).map((item, index) => ({
     label: `C${String(index + 1).padStart(2, "0")}`,
     title: truncateCodePoints(item.title, 200),
-    excerpt: truncateCodePoints(stripFrontmatter(item.body), 600),
+    excerpt: truncateCodePoints(stripFrontmatter(item.body), 200),
   }));
 }
 

@@ -7,6 +7,7 @@ const context: JournalContext = { directory: "/tmp/project", model: "m", provide
 function entry(): JournalEntry {
   return { id: "20260101-000000-000", title: "Title", project: "/tmp", model: "m", provider: "p", agent: "a", sessionId: "s", created: new Date("2026-01-01T00:00:00.000Z"), tags: ["tag"], body: "Body", filePath: "/tmp/entry.md" };
 }
+const disabledRerank = { loadConfig: async () => ({ status: "disabled" as const }) };
 const baseStore: JournalStore = {
   write: async () => entry(),
   read: async () => entry(),
@@ -28,10 +29,10 @@ function valid(schema: any, value: any): boolean {
 
 describe("v2 journal tools", () => {
   test("preserves the recognizable names and descriptions", () => {
-    expect([JournalWrite(baseStore, context).name, JournalRead(baseStore).name, JournalSearch(baseStore).name]).toEqual(["journal_write", "journal_read", "journal_search"]);
+    expect([JournalWrite(baseStore, context).name, JournalRead(baseStore).name, JournalSearch(baseStore, disabledRerank).name]).toEqual(["journal_write", "journal_read", "journal_search"]);
     expect(JournalWrite(baseStore, context).description).toContain("append-only");
     expect(JournalRead(baseStore).description).toContain("by its ID");
-    expect(JournalSearch(baseStore).description).toContain("lexical OR matching");
+    expect(JournalSearch(baseStore, disabledRerank).description).toContain("lexical OR matching");
   });
 
   test("journal_write description preserves its behavioral guidance", () => {
@@ -51,7 +52,7 @@ describe("v2 journal tools", () => {
     const read = JournalRead(baseStore).description;
     expect(read).not.toMatch(/append.only|cannot be (edited|modified)/i);
     expect(read).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-    const search = JournalSearch(baseStore);
+    const search = JournalSearch(baseStore, disabledRerank);
     expect(search.description).toMatch(/filters are optional/i);
     expect(search.description).toMatch(/global across all projects/i);
     expect(search.input.properties).toHaveProperty("project");
@@ -60,7 +61,7 @@ describe("v2 journal tools", () => {
   });
 
   test("descriptions are nonempty and do not name sibling tools", () => {
-    const descriptions = [JournalWrite(baseStore, context).description, JournalRead(baseStore).description, JournalSearch(baseStore).description];
+    const descriptions = [JournalWrite(baseStore, context).description, JournalRead(baseStore).description, JournalSearch(baseStore, disabledRerank).description];
     expect(descriptions.every((description) => description.trim().length > 0)).toBe(true);
     for (const [index, description] of descriptions.entries()) {
       for (const [otherIndex, name] of ["journal_write", "journal_read", "journal_search"].entries()) {
@@ -72,7 +73,7 @@ describe("v2 journal tools", () => {
   test("uses JSON schemas, rejects malformed and unknown arguments", () => {
     const write = JournalWrite(baseStore, context).input as any;
     const read = JournalRead(baseStore).input as any;
-    const search = JournalSearch(baseStore).input as any;
+    const search = JournalSearch(baseStore, disabledRerank).input as any;
     expect(write.type).toBe("object");
     expect(valid(write, { title: "t", body: "b" })).toBe(true);
     expect(valid(write, { title: 4, body: "b" })).toBe(false);
@@ -88,7 +89,7 @@ describe("v2 journal tools", () => {
   test("all execute methods return the v2 {content} result", async () => {
     const writeResult = await JournalWrite(baseStore, context).execute({ title: "t", body: "b" }, { agent: "a", sessionID: "s" });
     const readResult = await JournalRead(baseStore).execute({ id: "entry" }, {} as any);
-    const searchResult = await JournalSearch(baseStore).execute({}, {} as any);
+    const searchResult = await JournalSearch(baseStore, disabledRerank).execute({}, {} as any);
     for (const result of [writeResult, readResult, searchResult]) {
       expect(Object.keys(result)).toEqual(["content"]);
       expect(typeof result.content).toBe("string");
@@ -100,12 +101,29 @@ describe("v2 journal tools", () => {
 
   test("retains bounded tag inventory output formatting", async () => {
     const populated: JournalStore = { ...baseStore, search: async () => ({ entries: [entry()], total: 1, allTags: ["alpha", "beta"] }) };
-    expect((await JournalSearch(populated).execute({}, {} as any)).content).toContain("Tags in use: alpha, beta");
+    expect((await JournalSearch(populated, disabledRerank).execute({}, {} as any)).content).toContain("Tags in use: alpha, beta");
     const empty: JournalStore = { ...baseStore, search: async () => ({ entries: [], total: 0, allTags: [] }) };
-    expect((await JournalSearch(empty).execute({}, {} as any)).content).toBe("No journal entries found.");
+    expect((await JournalSearch(empty, disabledRerank).execute({}, {} as any)).content).toBe("No journal entries found.");
     const store: JournalStore = { ...baseStore, search: async () => ({ entries: [], total: 0, allTags: Array.from({ length: 21 }, (_, i) => `tag-${i}`) }) };
-    const result = await JournalSearch(store).execute({}, {} as any);
+    const result = await JournalSearch(store, disabledRerank).execute({}, {} as any);
     expect(result.content).toBe("No journal entries found.\nTags in use: 21 (filter with tags=...)");
+  });
+
+  test("reranking metadata is present only when enabled", async () => {
+    const twoEntries: JournalStore = {
+      ...baseStore,
+      search: async () => ({ entries: [entry(), { ...entry(), id: "20260101-000001-000", title: "Second" }], total: 2, allTags: ["tag"] }),
+    };
+    const enabled = JournalSearch(twoEntries, {
+      loadConfig: async () => ({ status: "enabled", config: { baseURL: "https://example/v1", model: "m" } }),
+      request: async ({ candidates }) => ({ ok: true, labels: candidates.map((candidate) => candidate.label) }),
+    });
+    const enabledResult = await enabled.execute({ text: "query" }, {} as any);
+    expect(enabledResult.metadata?.ranking).toEqual({ method: "bm25+llm-rrf", status: "applied", candidateCount: 2, labelCount: 2, k: 10 });
+
+    const disabled = JournalSearch(twoEntries, disabledRerank);
+    const disabledResult = await disabled.execute({ text: "query" }, {} as any);
+    expect(disabledResult).not.toHaveProperty("metadata");
   });
 
   test("journal_read formats metadata before the body", async () => {

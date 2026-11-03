@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.2.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.3.0"]
 }
 ```
 
@@ -111,7 +111,7 @@ Some gateways require extra request headers. Reasoning models must be told not t
 
 Without `reasoning_effort: "none"`, a reasoning model spends the entire completion budget and returns empty content; the plugin then falls back to BM25.
 
-Reranking is off by default. Without explicit enablement, journal search remains local and credential-free, with no reranking network requests. When enabled, each eligible search sends your query and the titles and excerpts of up to 50 filtered journal candidates to the HTTPS endpoint you configure. Titles are limited to 200 Unicode code points and excerpts to 600; sensitive information appearing in those fields is not automatically redacted. The plugin does not send journal paths, entry IDs, metadata, session history, or unrelated entries, and does not silently reuse OpenCode credentials. Your configured endpoint receives the dedicated API credential and processes journal content under its own policies. Reranking makes at most one request per search; failures return BM25 without retry. Requests may remain billable after timeout or cancellation.
+Reranking is off by default. Without explicit enablement, journal search remains local and credential-free, with no reranking network requests. When enabled, each eligible search sends your query and the titles and excerpts of up to 50 filtered journal candidates to the HTTPS endpoint you configure. Titles and excerpts are limited to 200 Unicode code points; sensitive information appearing in those fields is not automatically redacted. The plugin does not send journal paths, entry IDs, metadata, session history, or unrelated entries, and does not silently reuse OpenCode credentials. Your configured endpoint receives the dedicated API credential and processes journal content under its own policies. Reranking makes at most one request per search; failures return BM25 without retry. Requests may remain billable after timeout or cancellation.
 
 Configure reranking in `~/.config/opencode/agent-memory-rerank.json`, alongside `agent-memory.json`:
 
