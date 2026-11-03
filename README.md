@@ -32,7 +32,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.3.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.4.0"]
 }
 ```
 
@@ -124,7 +124,7 @@ Set `AGENT_MEMORY_RERANK_API_KEY` in the environment of the process that runs Op
 Constraints and pagination:
 
 - HTTPS only; plaintext `http` is rejected, including for localhost.
-- One request per search, with a 5-second deadline, request and response limits of 65,536 bytes each, 512 completion tokens by default (overridable via `request.body`), and no retries.
+- One request per search, with a 10-second deadline, request and response limits of 65,536 bytes each, 512 completion tokens by default (overridable via `request.body`), and no retries. A slow provider can make a search take up to about 10 seconds before timeout fallback.
 - `request.body` may add or override any scalar field except `model`, `messages`, and `stream` (up to 10 fields; for example `reasoning_effort`, `temperature`, or `max_tokens`). The plugin always sends `max_tokens` (512 by default), so a provider that requires `max_completion_tokens` instead of `max_tokens` cannot be used.
 - Only the first 50 candidates can move; `total` is unchanged. A page is reranked only when it fits entirely inside that top-50 window; other pages keep plain BM25 order.
 - Searches without non-whitespace `text` are never reranked.

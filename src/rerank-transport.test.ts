@@ -71,6 +71,16 @@ describe("rerank transport", () => {
     expect(receivedSignal?.aborted).toBe(true);
   });
 
+  test("caps caller timeout at 10 seconds", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const result = await call(((_input: Request | URL | string, init?: RequestInit) => {
+      receivedSignal = init?.signal as AbortSignal;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch, { timeoutMs: 60000 });
+    expect(result).toEqual({ ok: false, reason: "timeout" });
+    expect(receivedSignal?.aborted).toBe(true);
+  }, 12000);
+
   test("rejects oversized response while streaming without Content-Length", async () => {
     let sent = false;
     const stream = new ReadableStream<Uint8Array>({

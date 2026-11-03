@@ -71,7 +71,7 @@ export async function requestRerank(args: {
   if (new TextEncoder().encode(serialized).byteLength > MAX_BYTES) return { ok: false, reason: "budget_exceeded" };
   const fetchImpl = args.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timeoutMs = Math.min(args.timeoutMs ?? 5000, 5000);
+  const timeoutMs = Math.min(args.timeoutMs ?? 10000, 10000);
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
