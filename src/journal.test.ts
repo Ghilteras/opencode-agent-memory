@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
-import { splitFrontmatter } from "./frontmatter";
+import { splitFrontmatter, writeFileNoReplace } from "./frontmatter";
 import NativeMiniSearch from "minisearch";
 
 let embeddingGenerationCalls = 0;
@@ -33,6 +33,33 @@ mock.module("./embeddings", () => ({
 async function mkTmpDir(): Promise<string> {
   return fs.mkdtemp(path.join("/tmp/", "opencode-journal-"));
 }
+
+test("a failed temporary write leaves no temp file", async () => {
+  const dir = await mkTmpDir();
+  const journalDir = path.join(dir, "journal");
+  const real = await import("node:fs/promises");
+
+  const failingFs = {
+    mkdir: real.mkdir,
+    link: real.link,
+    rm: real.rm,
+    writeFile: async (
+      filePath: string | URL,
+      data: string | Uint8Array,
+      options?: unknown,
+    ) => {
+      // Write partial bytes, then fail: the exact path the buggy scope cannot clean up.
+      await real.writeFile(filePath as string, "partial", "utf-8");
+      throw Object.assign(new Error("simulated write failure"), { code: "ENOSPC" });
+    },
+  } as unknown as Parameters<typeof writeFileNoReplace>[3];
+
+  await expect(
+    writeFileNoReplace(journalDir, "entry.md", "full body", failingFs),
+  ).rejects.toThrow();
+
+  expect(await real.readdir(journalDir)).toEqual([]);
+});
 
 // Bind the journal module AFTER the embeddings mock registration (above) via
 // dynamic import, so the store uses the fake embeddings regardless of bun's

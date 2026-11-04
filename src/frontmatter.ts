@@ -66,25 +66,33 @@ export async function atomicWriteFile(
   }
 }
 
+export type PublishFs = Pick<
+  typeof fs,
+  "mkdir" | "writeFile" | "link" | "rm"
+>;
+
 /**
  * Publish `content` at `directory/baseName` without ever replacing an existing
  * file. The temporary file is fully written first, then published with
  * `fs.link`, which fails with EEXIST instead of overwriting. On collision the
  * name gains a `-N` suffix before `.md`, which the id validator accepts.
  * Returns the path actually used.
+ * `fsImpl` is the injection seam for tests: it defaults to node's fs module and
+ * exists so a failing write can be exercised without mocking the module.
  */
 export async function writeFileNoReplace(
   directory: string,
   baseName: string,
   content: string,
+  fsImpl: PublishFs = fs,
 ): Promise<string> {
-  await fs.mkdir(directory, { recursive: true }).catch(() => {});
+  await fsImpl.mkdir(directory, { recursive: true }).catch(() => {});
   const tempPath = path.join(
     directory,
     `.${baseName}.${process.pid}.${randomUUID()}.tmp`,
   );
   try {
-    await fs.writeFile(tempPath, content, "utf-8");
+    await fsImpl.writeFile(tempPath, content, "utf-8");
     for (let attempt = 0; attempt < 1000; attempt++) {
       const name =
         attempt === 0
@@ -92,7 +100,7 @@ export async function writeFileNoReplace(
           : baseName.replace(/\.md$/, `-${attempt}.md`);
       const targetPath = path.join(directory, name);
       try {
-        await fs.link(tempPath, targetPath);
+        await fsImpl.link(tempPath, targetPath);
         return targetPath;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
@@ -100,6 +108,6 @@ export async function writeFileNoReplace(
     }
     throw new Error(`Could not publish ${baseName}: too many collisions`);
   } finally {
-    await fs.rm(tempPath, { force: true }).catch(() => {});
+    await fsImpl.rm(tempPath, { force: true }).catch(() => {});
   }
 }
