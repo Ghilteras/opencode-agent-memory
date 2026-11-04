@@ -167,6 +167,58 @@ describe("journal store", () => {
     expect(raw).toContain("title: Test insight");
   });
 
+  test("same-millisecond writes preserve both append-only entries", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const RealDate = Date;
+    const fixedTime = new RealDate("2026-11-04T12:34:56.789Z").getTime();
+    globalThis.Date = class extends RealDate {
+      constructor(value?: string | number | Date) {
+        if (arguments.length === 0) super(fixedTime);
+        else super(value as string | number);
+      }
+    } as DateConstructor;
+
+    try {
+      const first = await store.write({ title: "First collision", body: "First collision body" });
+      const second = await store.write({ title: "Second collision", body: "Second collision body" });
+      const files = (await fs.readdir(path.join(tmpDir, "journal"))).filter((name) => name.endsWith(".md"));
+
+      expect(files).toHaveLength(2);
+      expect(second.id).not.toBe(first.id);
+      expect(second.id).toEndWith("-1");
+      const contents = await Promise.all(files.map((name) => fs.readFile(path.join(tmpDir, "journal", name), "utf-8")));
+      expect(contents.some((content) => content.includes("First collision body"))).toBe(true);
+      expect(contents.some((content) => content.includes("Second collision body"))).toBe(true);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
+  test("suffixed collision id passes validation and reads the second entry", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const RealDate = Date;
+    const fixedTime = new RealDate("2026-11-04T12:34:56.789Z").getTime();
+    globalThis.Date = class extends RealDate {
+      constructor(value?: string | number | Date) {
+        if (arguments.length === 0) super(fixedTime);
+        else super(value as string | number);
+      }
+    } as DateConstructor;
+
+    try {
+      await store.write({ title: "First collision", body: "First collision body" });
+      const second = await store.write({ title: "Second collision", body: "Second collision body" });
+      expect(second.id).toEndWith("-1");
+      const read = await store.read(second.id);
+      expect(read.title).toBe("Second collision");
+      expect(read.body).toBe("Second collision body");
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
   test("write generates chronological filenames", async () => {
     tmpDir = await mkTmpDir();
     const store = createJournalStore(tmpDir);

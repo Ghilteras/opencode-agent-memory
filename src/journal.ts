@@ -7,7 +7,7 @@ import MiniSearch from "minisearch";
 import { z } from "zod";
 
 import { EMBEDDING_DIMENSION, embeddingModelName, generateEmbedding } from "./embeddings";
-import { atomicWriteFile, buildFrontmatterDocument, splitFrontmatter } from "./frontmatter";
+import { buildFrontmatterDocument, splitFrontmatter, writeFileNoReplace } from "./frontmatter";
 
 const TagSchema = z.looseObject({
   name: z.string().min(1),
@@ -244,8 +244,6 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       await fs.mkdir(journalDir, { recursive: true });
 
       const created = new Date();
-      const filename = entryFilename(created);
-      const filePath = path.join(journalDir, filename);
 
       const frontmatter: Record<string, unknown> = {
         title: entry.title,
@@ -260,7 +258,11 @@ export function createJournalStore(configDir?: string, cacheDir?: string): Journ
       if (entry.tags && entry.tags.length > 0) frontmatter.tags = entry.tags;
 
       const content = buildFrontmatterDocument(frontmatter, entry.body);
-      await atomicWriteFile(filePath, content);
+      const filePath = await writeFileNoReplace(
+        journalDir,
+        entryFilename(created),
+        content,
+      );
 
       // Keep the sidecar for compatibility with doctor, the format contract, and future consumers; search does not read it.
       const searchableText = `${entry.title}\n${entry.body}`;

@@ -65,3 +65,40 @@ export async function atomicWriteFile(
     throw err;
   }
 }
+
+/**
+ * Publish `content` at `directory/baseName` without ever replacing an existing
+ * file. The temporary file is fully written first, then published with
+ * `fs.link`, which fails with EEXIST instead of overwriting. On collision the
+ * name gains a `-N` suffix before `.md`, which the id validator accepts.
+ * Returns the path actually used.
+ */
+export async function writeFileNoReplace(
+  directory: string,
+  baseName: string,
+  content: string,
+): Promise<string> {
+  const tempPath = path.join(
+    directory,
+    `.${baseName}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  await fs.writeFile(tempPath, content, "utf-8");
+  try {
+    for (let attempt = 0; attempt < 1000; attempt++) {
+      const name =
+        attempt === 0
+          ? baseName
+          : baseName.replace(/\.md$/, `-${attempt}.md`);
+      const targetPath = path.join(directory, name);
+      try {
+        await fs.link(tempPath, targetPath);
+        return targetPath;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+    }
+    throw new Error(`Could not publish ${baseName}: too many collisions`);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
