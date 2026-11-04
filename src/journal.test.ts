@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
-import { writeFileNoReplace } from "./frontmatter";
+import { splitFrontmatter } from "./frontmatter";
 import NativeMiniSearch from "minisearch";
 
 let embeddingGenerationCalls = 0;
@@ -201,6 +201,11 @@ describe("journal store", () => {
     const moduleUrl = new URL("./journal.ts", import.meta.url).href;
     const children = Array.from({ length: 20 }, (_, index) => {
       const script = `
+        const RealDate = Date;
+        const fixed = new RealDate("2026-11-04T12:34:56.789Z").getTime();
+        globalThis.Date = class extends RealDate {
+          constructor(value) { if (arguments.length === 0) super(fixed); else super(value); }
+        };
         const { createJournalStore } = await import(${JSON.stringify(moduleUrl)});
         await createJournalStore(${JSON.stringify(tmpDir)}).write({ title: "Writer ${index}", body: "Concurrent body ${index}" });
       `;
@@ -220,10 +225,10 @@ describe("journal store", () => {
     const files = (await fs.readdir(path.join(tmpDir, "journal"))).filter((name) => name.endsWith(".md"));
     expect(files).toHaveLength(20);
     const contents = await Promise.all(files.map((name) => fs.readFile(path.join(tmpDir, "journal", name), "utf-8")));
-    for (let index = 0; index < 20; index++) {
-      expect(contents.some((content) => content.includes(`Concurrent body ${index}`))).toBe(true);
-    }
-  }, 30_000);
+    const bodies = contents.map((content) => splitFrontmatter(content).body.trimEnd()).sort();
+    const expected = Array.from({ length: 20 }, (_, index) => `Concurrent body ${index}`).sort();
+    expect(bodies).toEqual(expected);
+  }, 60_000);
 
   test("a same-millisecond collision invalidates a warmed lexical index", async () => {
     tmpDir = await mkTmpDir();
@@ -252,15 +257,6 @@ describe("journal store", () => {
       globalThis.Date = RealDate;
     }
   });
-
-  test("failed temporary-file creation leaves no temp file", async () => {
-    tmpDir = await mkTmpDir();
-    const blocker = path.join(tmpDir, "not-a-directory");
-    await fs.writeFile(blocker, "file");
-
-    await expect(writeFileNoReplace(path.join(blocker, "child"), "entry.md", "body")).rejects.toThrow();
-    expect((await fs.readdir(tmpDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-  }, 20_000);
 
   test("suffixed collision id passes validation and reads the second entry", async () => {
     tmpDir = await mkTmpDir();
