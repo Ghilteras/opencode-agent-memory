@@ -78,12 +78,13 @@ export async function writeFileNoReplace(
   baseName: string,
   content: string,
 ): Promise<string> {
+  await fs.mkdir(directory, { recursive: true }).catch(() => {});
   const tempPath = path.join(
     directory,
     `.${baseName}.${process.pid}.${randomUUID()}.tmp`,
   );
-  await fs.writeFile(tempPath, content, "utf-8");
   try {
+    await fs.writeFile(tempPath, content, "utf-8");
     for (let attempt = 0; attempt < 1000; attempt++) {
       const name =
         attempt === 0

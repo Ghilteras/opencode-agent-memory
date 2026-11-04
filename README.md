@@ -6,17 +6,21 @@
 >
 > Originally created by Joshua David Thomas and licensed under the MIT license. Attribution preserved below; see License section.
 
-A journal-only memory plugin for [OpenCode](https://opencode.ai): an append-only, tagged journal with local lexical search.
+A journal-only memory plugin for [OpenCode](https://opencode.ai): a tagged journal with local lexical search.
+
+## Entry-loss fix (2.4.1)
+
+Version 2.4.0 could silently overwrite an existing journal entry when two writes generated the same millisecond filename, violating the advertised append-only guarantee. Entries are now preserved using IDs such as `20261104-123456-789-1`; treat IDs as opaque strings. Previously overwritten entries are **not** recovered by upgrading, and journal diagnostics cannot detect content that was overwritten — recovery requires a backup or another surviving copy. Journal storage now requires filesystem hard-link support; on an unsupported filesystem a write fails loudly instead of overwriting an existing entry.
 
 ## Experimental
 
-This plugin is experimental. It gives the agent one durable, self-maintained surface: a private journal. Entries are append-only - the agent writes new entries but never edits old ones.
+This plugin is experimental. It gives the agent one durable, self-maintained surface: a private journal. New entries are appended without replacing existing files; the agent does not edit old entries.
 
 Think of it as a searchable sidecar to `AGENTS.md`. OpenCode supports [rules](https://opencode.ai/docs/rules/) via `AGENTS.md` and custom instruction files; those remain the place for eager, always-in-context facts. The journal is for everything else: insights, discoveries, decisions, and observations worth finding later, not carrying every turn.
 
 ## Features
 
-- **Append-only journal** - Entries survive across sessions and context compaction
+- **Append-only journal** - Entries survive across sessions and context compaction; storage requires filesystem hard-link support
 - **Local lexical search** - Find candidate entries by matching query words in titles and bodies
 - **Metadata on every entry** - Project, model, provider, agent, session, timestamp, tags
 - **Guidance in tool descriptions** - Journal usage guidance lives in the descriptions of the journal tools, so an agent sees it only when it is allowed to call them
@@ -32,7 +36,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.4.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.4.1"]
 }
 ```
 
@@ -62,7 +66,7 @@ The agent gets 3 tools:
 
 | Tool | Description |
 |------|-------------|
-| `journal_write` | Write a new append-only entry (title, body, optional tags) |
+| `journal_write` | Write a new entry without replacing existing files (title, body, optional tags; requires filesystem hard-link support) |
 | `journal_search` | Find lexical candidates by matching query words in titles and bodies; filter by project or tags, with pagination |
 | `journal_read` | Read a specific journal entry by ID |
 

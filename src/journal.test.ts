@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
+import { writeFileNoReplace } from "./frontmatter";
 import NativeMiniSearch from "minisearch";
 
 let embeddingGenerationCalls = 0;
@@ -194,6 +195,72 @@ describe("journal store", () => {
       globalThis.Date = RealDate;
     }
   });
+
+  test("concurrent processes preserve every journal entry", async () => {
+    tmpDir = await mkTmpDir();
+    const moduleUrl = new URL("./journal.ts", import.meta.url).href;
+    const children = Array.from({ length: 20 }, (_, index) => {
+      const script = `
+        const { createJournalStore } = await import(${JSON.stringify(moduleUrl)});
+        await createJournalStore(${JSON.stringify(tmpDir)}).write({ title: "Writer ${index}", body: "Concurrent body ${index}" });
+      `;
+      return Bun.spawn([process.execPath, "-e", script], {
+        env: { ...process.env, HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    });
+    const results = await Promise.all(children.map(async (child) => ({
+      code: await child.exited,
+      stdout: await new Response(child.stdout).text(),
+      stderr: await new Response(child.stderr).text(),
+    })));
+    expect(results.map(({ code }) => code)).toEqual(Array(20).fill(0));
+
+    const files = (await fs.readdir(path.join(tmpDir, "journal"))).filter((name) => name.endsWith(".md"));
+    expect(files).toHaveLength(20);
+    const contents = await Promise.all(files.map((name) => fs.readFile(path.join(tmpDir, "journal", name), "utf-8")));
+    for (let index = 0; index < 20; index++) {
+      expect(contents.some((content) => content.includes(`Concurrent body ${index}`))).toBe(true);
+    }
+  }, 30_000);
+
+  test("a same-millisecond collision invalidates a warmed lexical index", async () => {
+    tmpDir = await mkTmpDir();
+    const store = createJournalStore(tmpDir);
+    const RealDate = Date;
+    const fixedTime = new RealDate("2026-11-04T12:34:56.789Z").getTime();
+    globalThis.Date = class extends RealDate {
+      constructor(value?: string | number | Date) {
+        if (arguments.length === 0) super(fixedTime);
+        else super(value as string | number);
+      }
+    } as DateConstructor;
+
+    try {
+      await store.write({ title: "Initial", body: "initialonlytoken" });
+      await store.search({ text: "initialonlytoken" });
+      await store.write({ title: "New collision", body: "collisiononlytoken" });
+      const files = (await fs.readdir(path.join(tmpDir, "journal"))).filter((name) => name.endsWith(".md"));
+      expect(files).toHaveLength(2);
+
+      const initialResult = await store.search({ text: "initialonlytoken" });
+      expect(initialResult.entries.map(({ body }) => body)).toContain("initialonlytoken");
+      const result = await store.search({ text: "collisiononlytoken" });
+      expect(result.entries.map(({ body }) => body)).toEqual(["collisiononlytoken"]);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
+  test("failed temporary-file creation leaves no temp file", async () => {
+    tmpDir = await mkTmpDir();
+    const blocker = path.join(tmpDir, "not-a-directory");
+    await fs.writeFile(blocker, "file");
+
+    await expect(writeFileNoReplace(path.join(blocker, "child"), "entry.md", "body")).rejects.toThrow();
+    expect((await fs.readdir(tmpDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  }, 20_000);
 
   test("suffixed collision id passes validation and reads the second entry", async () => {
     tmpDir = await mkTmpDir();
