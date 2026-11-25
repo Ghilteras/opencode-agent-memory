@@ -11,6 +11,8 @@ const INDEX_NOTICE = "Project journal index (MEMORY.md) exceeds the injection ca
 const INDEX_WRAPPER = "This is the project's journal-pointer index (MEMORY.md at the repository root). Retrieve entries with journal_search/journal_read; older lines remain relevant.";
 const MAX_INDEX_WORDS = 330;
 const MAX_INDEX_BYTES = 8192;
+const INDEX_PARTIAL_NOTICE = (omitted: number, total: number) =>
+  `[memory index truncated: ${omitted} of ${total} entries omitted; use journal_search for older pointers]`;
 
 export default Plugin.define({
   id: "opencode-agent-memory",
@@ -53,6 +55,43 @@ export default Plugin.define({
       return contextual.execute(input, toolCtx);
     };
 
+    function renderIndex(body: string): string {
+      const records = body
+        .split(/\n-{3,}\n/)
+        .map((record) => record.trim())
+        .filter((record) => record.length > 0);
+      if (records.length === 0) return "";
+      const fits = (recordsText: string, rendered: string) => {
+        const trimmed = recordsText.trim();
+        const words = trimmed ? trimmed.split(/\s+/).length : 0;
+        return words <= MAX_INDEX_WORDS && Buffer.byteLength(rendered, "utf8") <= MAX_INDEX_BYTES;
+      };
+      const assemble = (kept: string[]) => `${INDEX_WRAPPER}\n\n${kept.join("\n\n---\n\n")}`;
+      if (fits(records.join("\n\n---\n\n"), assemble(records))) return assemble(records);
+      // Whole records only, in authored order: an oversized entry is skipped, never cut, and the
+      // newest entries that fit are kept so a single bloated record cannot black out the index.
+      const kept: string[] = [];
+      let omitted = 0;
+      for (const record of records) {
+        const candidate = [...kept, record];
+        if (fits(candidate.join("\n\n---\n\n"), assemble(candidate))) kept.push(record);
+        else omitted += 1;
+      }
+      if (kept.length === 0) return INDEX_NOTICE;
+      // The partial notice is appended AFTER the caps are satisfied, so re-check the whole string.
+      // If the notice pushes it over, drop the last kept record (counting it as omitted) instead of
+      // falling back to the zero-pointer notice: an index that fits must never black out because of
+      // the sentence explaining what was omitted.
+      const selected = [...kept];
+      while (selected.length > 0) {
+        const omittedNow = records.length - selected.length;
+        const rendered = `${assemble(selected)}\n\n${INDEX_PARTIAL_NOTICE(omittedNow, records.length)}`;
+        if (Buffer.byteLength(rendered, "utf8") <= MAX_INDEX_BYTES) return rendered;
+        selected.pop();
+      }
+      return INDEX_NOTICE;
+    }
+
     await ctx.session.hook("context", async (input) => {
       contexts.set(input.sessionID, {
         directory,
@@ -63,9 +102,9 @@ export default Plugin.define({
         const source = await fs.readFile(path.join(directory, "MEMORY.md"), "utf8");
         const body = splitFrontmatter(source).body;
         if (body.trim().length === 0) return;
-        const rendered = `${INDEX_WRAPPER}\n\n${body}`;
-        const words = body.trim().split(/\s+/).length;
-        input.system.push({ type: "text", text: words <= MAX_INDEX_WORDS && Buffer.byteLength(rendered, "utf8") <= MAX_INDEX_BYTES ? rendered : INDEX_NOTICE });
+        const rendered = renderIndex(body);
+        if (rendered.length === 0) return;
+        input.system.push({ type: "text", text: rendered });
       } catch {
         // Missing and unreadable project indexes are intentionally silent.
       }

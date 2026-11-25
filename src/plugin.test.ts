@@ -217,4 +217,62 @@ describe("project journal index injection", () => {
     try { await writeConfig({ journal: { enabled: false } }); const h = harness(directory); await h.start(); expect(h.contextHook()).toBeUndefined(); }
     finally { await fs.rm(directory, { recursive: true, force: true }); }
   });
+
+  const record = (marker: string, words: number) => [marker, ...Array(Math.max(0, words - 1)).fill("filler")].join(" ");
+
+  test("oversized index keeps the records that fit and reports what it omitted", async () => {
+    const directory = await project(`${record("newest-pointer", 50)}\n---\n${record("older-pointer", 400)}`);
+    try {
+      const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e);
+      const text = e.system[0]!.text;
+      expect(text).toContain("newest-pointer");
+      expect(text).not.toContain("older-pointer");
+      expect(text).toContain("memory index truncated");
+      expect(text).toContain("1 of 2");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("an oversized record is skipped without blacking out the usable ones after it", async () => {
+    const directory = await project(`${record("older-pointer", 400)}\n---\n${record("newest-pointer", 50)}`);
+    try {
+      const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e);
+      const text = e.system[0]!.text;
+      expect(text).toContain("newest-pointer");
+      expect(text).toContain("1 of 2");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("a single oversized record injects only the fixed notice", async () => {
+    const directory = await project(record("only-pointer", 400));
+    try { const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e); expect(e.system).toEqual([{ type: "text", text: "Project journal index (MEMORY.md) exceeds the injection cap; read the file at the repository root directly for the pointer list." }]); }
+    finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("records that fit are joined whole, in authored order", async () => {
+    const directory = await project(`${record("first-pointer", 20)}\n---\n${record("second-pointer", 20)}\n----\n${record("third-pointer", 20)}`);
+    try {
+      const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e);
+      const text = e.system[0]!.text;
+      const records = text.split("\n\n---\n\n");
+      expect(records).toHaveLength(3);
+      expect(records[0]!).toContain("first-pointer");
+      expect(records[1]!).toContain("second-pointer");
+      expect(records[2]!).toContain("third-pointer");
+      expect(text).not.toContain("memory index truncated");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("an index that fits is not blacked out when the partial notice overflows the byte cap", async () => {
+    const second = `- ${"y".repeat(4000)}`;
+    const third = `- ${"z".repeat(100)}`;
+    const body = [`- ${"x".repeat(4000)}`, second, third].join("\n\n---\n\n");
+    const directory = await project(body);
+    try {
+      const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e);
+      const text = e.system[0]!.text;
+      expect(text).not.toBe("Project journal index (MEMORY.md) exceeds the injection cap; read the file at the repository root directly for the pointer list.");
+      expect(text).toContain("x".repeat(4000));
+      expect(text).toContain("2 of 3");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
 });
