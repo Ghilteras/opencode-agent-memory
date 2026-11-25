@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as realEmbeddings from "./embeddings";
@@ -20,8 +20,10 @@ mock.module("minisearch", () => ({ default: CountingMiniSearch }));
 // Mock the embeddings module to avoid downloading a real model in tests.
 // Spread the real module so every export not overridden here keeps its real
 // value regardless of test-file discovery order.
+const realEmbeddingsExports = { ...realEmbeddings };
+
 mock.module("./embeddings", () => ({
-  ...realEmbeddings,
+  ...realEmbeddingsExports,
   generateEmbedding: async () => {
     embeddingGenerationCalls++;
     return Array.from({ length: 8 }, (_, i) => i / 8);
@@ -29,6 +31,18 @@ mock.module("./embeddings", () => ({
   EMBEDDING_DIMENSION: 8,
   embeddingModelName: () => "test-model",
 }));
+
+// Module mocks in Bun are process-global and rewire importers that are loaded
+// later in the same run, so embeddings.test.ts would otherwise see the mocked
+// EMBEDDING_DIMENSION=8 and the "test-model" name. Restore both the spies and
+// the module registry entry once this file's tests finish, so discovery order
+// cannot change the result. The exports are re-registered from a snapshot
+// taken before mocking, because the namespace object itself is live and would
+// resolve back to the mock.
+afterAll(() => {
+  mock.restore();
+  mock.module("./embeddings", () => realEmbeddingsExports);
+});
 
 async function mkTmpDir(): Promise<string> {
   return fs.mkdtemp(path.join("/tmp/", "opencode-journal-"));

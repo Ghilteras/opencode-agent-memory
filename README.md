@@ -8,7 +8,7 @@
 
 A journal-only memory plugin for [OpenCode](https://opencode.ai): a tagged journal with local lexical search.
 
-## Partial index instead of total loss (2.5.0)
+## Partial index instead of total loss (2.5.1)
 
 When `MEMORY.md` exceeded the injection caps (330 words or 8192 rendered bytes), earlier versions
 replaced the **entire** index with a notice: the session received zero pointers. Rendering is now
@@ -23,6 +23,8 @@ unchanged.
 
 Nothing else changes: same wrapper, same caps, same frontmatter handling, same resolution of
 `MEMORY.md` from the session directory.
+
+2.5.0 was tagged but never published: its CI gate failed on an unrelated test-mock leak, fixed here. 2.5.1 is the first published build of this change.
 
 ## Entry-loss fix (2.4.1)
 
@@ -52,7 +54,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.5.0"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.5.1"]
 }
 ```
 
