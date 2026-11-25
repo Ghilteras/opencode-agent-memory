@@ -8,6 +8,19 @@
 
 A journal-only memory plugin for [OpenCode](https://opencode.ai): a tagged journal with local lexical search.
 
+## Worktree freshness warning (2.6.0)
+
+The harness injects `AGENTS.md`, `TOOLS.md` and `MEMORY.md` from the session's directory, so a
+worktree whose committed copies differ from `origin/main` silently injects stale rules — the
+failure this repo's own tooling hit when a two-month-old worktree presented September's
+instructions as current.
+
+Once per session the plugin compares those three files with `origin/main` using one bounded
+`git diff --quiet` (1.5 s cap) and appends a warning to the prompt when they differ. It compares
+**content, not commit counts**, so a squash-landed branch whose files are identical stays silent;
+and it is silent on every unknown — not a repository, no `origin/main`, git missing, or timeout.
+An unknown staleness must never produce a false warning. The index rendering is unchanged.
+
 ## Partial index instead of total loss (2.5.1)
 
 When `MEMORY.md` exceeded the injection caps (330 words or 8192 rendered bytes), earlier versions
@@ -54,7 +67,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.5.1"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.6.0"]
 }
 ```
 

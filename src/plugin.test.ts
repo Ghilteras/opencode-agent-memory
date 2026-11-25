@@ -194,7 +194,9 @@ describe("project journal index injection", () => {
     await fs.writeFile(unreadable, "not a directory");
     try {
       for (const directory of [empty, missing, unreadable]) {
-        const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e); expect(e.system).toEqual([]);
+        const h = harness(directory); await h.start(); const e = event(); await h.contextHook()!(e);
+        expect(e.system).toEqual([]);
+        expect(e.system.filter((s) => s.text.includes("differ from origin/main"))).toHaveLength(0);
       }
     } finally {
       await fs.rm(empty, { recursive: true, force: true });
@@ -273,6 +275,68 @@ describe("project journal index injection", () => {
       expect(text).not.toBe("Project journal index (MEMORY.md) exceeds the injection cap; read the file at the repository root directly for the pointer list.");
       expect(text).toContain("x".repeat(4000));
       expect(text).toContain("2 of 3");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe("worktree freshness warning", () => {
+  const event = (sessionID: string) => ({ sessionID, model: { id: "m", providerID: "p" }, system: [] as Array<{ type: "text"; text: string }> });
+
+  async function git(directory: string, ...args: string[]): Promise<string> {
+    const proc = Bun.spawn(["git", "-C", directory, ...args], { stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new Error(`git ${args.join(" ")} failed (${code}): ${err}`);
+    return out.trim();
+  }
+
+  async function repo(): Promise<string> {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "memory-freshness-"));
+    await git(directory, "init", "-q", "-b", "main");
+    await git(directory, "config", "user.email", "test@example.com");
+    await git(directory, "config", "user.name", "Test");
+    await fs.writeFile(path.join(directory, "AGENTS.md"), "first rules\n");
+    await git(directory, "add", "AGENTS.md");
+    await git(directory, "commit", "-q", "-m", "first");
+    return directory;
+  }
+
+  const warnings = (system: Array<{ text: string }>) => system.filter((s) => s.text.includes("differ from origin/main"));
+
+  test("warns when the committed injected file differs from origin/main", async () => {
+    const directory = await repo();
+    try {
+      const first = await git(directory, "rev-parse", "HEAD");
+      await fs.appendFile(path.join(directory, "AGENTS.md"), "second rules\n");
+      await git(directory, "add", "AGENTS.md");
+      await git(directory, "commit", "-q", "-m", "second");
+      await git(directory, "update-ref", "refs/remotes/origin/main", "HEAD");
+      await git(directory, "checkout", "-q", first); // detached: the committed AGENTS.md differs from origin/main
+      const h = harness(directory); await h.start();
+      const e = event("freshness-behind"); await h.contextHook()!(e);
+      const found = warnings(e.system);
+      expect(found).toHaveLength(1);
+      expect(found[0]!.text).toContain("fetch and rebase");
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  // Content comparison, not commit count: HEAD here is one commit behind origin/main, but the
+  // injected files are byte-identical, so nothing is stale and no warning may be raised.
+  test("stays silent when the injected files are identical even if HEAD is behind", async () => {
+    const directory = await repo();
+    try {
+      const first = await git(directory, "rev-parse", "HEAD");
+      await fs.writeFile(path.join(directory, "README.md"), "unrelated\n");
+      await git(directory, "add", "README.md");
+      await git(directory, "commit", "-q", "-m", "unrelated");
+      await git(directory, "update-ref", "refs/remotes/origin/main", "HEAD");
+      await git(directory, "checkout", "-q", first);
+      const h = harness(directory); await h.start();
+      const e = event("freshness-current"); await h.contextHook()!(e);
+      expect(warnings(e.system)).toHaveLength(0);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   });
 });

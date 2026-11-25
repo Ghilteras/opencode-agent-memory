@@ -13,6 +13,29 @@ const MAX_INDEX_WORDS = 330;
 const MAX_INDEX_BYTES = 8192;
 const INDEX_PARTIAL_NOTICE = (omitted: number, total: number) =>
   `[memory index truncated: ${omitted} of ${total} entries omitted; use journal_search for older pointers]`;
+const FRESHNESS_TIMEOUT_MS = 1500;
+const freshnessChecked = new Set<string>();
+
+// The harness injects AGENTS.md/TOOLS.md/MEMORY.md from the session directory; a worktree whose
+// committed copy of those files differs from origin/main silently injects stale rules. Compares
+// CONTENT, not commit count: a squash-landed branch with identical files must stay silent. One
+// bounded check per session, silent on every unknown (not a repo, no origin/main, git missing, timeout).
+async function stalenessWarning(directory: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(
+      ["git", "-C", directory, "diff", "--quiet", "HEAD", "origin/main", "--", "AGENTS.md", "TOOLS.md", "MEMORY.md"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    const timer = setTimeout(() => { try { proc.kill(); } catch {} }, FRESHNESS_TIMEOUT_MS);
+    const code = await proc.exited;
+    clearTimeout(timer);
+    // 0 = identical, 1 = differ, anything else (no origin/main, not a repo, git missing) = unknown.
+    if (code !== 1) return null;
+    return "⚠️ The injected files (AGENTS.md/TOOLS.md/MEMORY.md) differ from origin/main in this directory: if you did not change them deliberately, fetch and rebase — the rules you are reading may be stale.";
+  } catch {
+    return null;
+  }
+}
 
 export default Plugin.define({
   id: "opencode-agent-memory",
@@ -98,6 +121,11 @@ export default Plugin.define({
         model: input.model.id,
         provider: input.model.providerID,
       });
+      if (!freshnessChecked.has(input.sessionID)) {
+        freshnessChecked.add(input.sessionID);
+        const warning = await stalenessWarning(directory);
+        if (warning) input.system.push({ type: "text", text: warning });
+      }
       try {
         const source = await fs.readFile(path.join(directory, "MEMORY.md"), "utf8");
         const body = splitFrontmatter(source).body;

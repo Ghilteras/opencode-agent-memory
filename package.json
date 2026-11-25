@@ -1,6 +1,6 @@
 {
   "name": "@ghilteras/opencode-agent-memory",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "description": "Journal-only memory plugin for OpenCode: a tagged, lexically searchable journal that never replaces an existing entry.",
   "author": "Angelo Pantano <ghilteras@protonmail.com>",
   "license": "MIT",
