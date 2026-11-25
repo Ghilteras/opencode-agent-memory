@@ -1,3 +1,10 @@
+---
+tier: 1
+description: Rules and constraints of the opencode-agent-memory repo. Read at the start of every session.
+size_limit: 250 words (wc -w)
+last_curated: 2026-11-24
+---
+
 # Repository rules
 
 - Run checks with `bun run typecheck` and `bun run test`. The package scripts use Bun; `pnpm check` is not defined. There is no build script.
