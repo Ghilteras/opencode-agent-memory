@@ -8,6 +8,22 @@
 
 A journal-only memory plugin for [OpenCode](https://opencode.ai): a tagged journal with local lexical search.
 
+## Partial index instead of total loss (2.5.0)
+
+When `MEMORY.md` exceeded the injection caps (330 words or 8192 rendered bytes), earlier versions
+replaced the **entire** index with a notice: the session received zero pointers. Rendering is now
+record-by-record — records are the `---`-separated entries of the file, selected whole and in
+authored order under both caps. An oversized entry is skipped rather than cut, and a partial index
+closes with `[memory index truncated: N of M entries omitted; use journal_search for older pointers]`.
+
+The notice itself is re-checked against the byte cap: when it does not fit, the last kept record is
+dropped and counted as omitted, so an index that already fit can never be blacked out by the
+sentence explaining what was omitted. If a single record cannot fit, the existing fixed notice is
+unchanged.
+
+Nothing else changes: same wrapper, same caps, same frontmatter handling, same resolution of
+`MEMORY.md` from the session directory.
+
 ## Entry-loss fix (2.4.1)
 
 Version 2.4.0 could silently overwrite an existing journal entry when two writes generated the same millisecond filename, violating the advertised append-only guarantee. Entries are now preserved using IDs such as `20261104-123456-789-1`; treat IDs as opaque strings. Previously overwritten entries are **not** recovered by upgrading, and journal diagnostics cannot detect content that was overwritten — recovery requires a backup or another surviving copy. Journal storage now requires filesystem hard-link support; on an unsupported filesystem a write fails loudly instead of overwriting an existing entry.
@@ -36,7 +52,7 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugins": ["@ghilteras/opencode-agent-memory@2.4.1"]
+  "plugins": ["@ghilteras/opencode-agent-memory@2.5.0"]
 }
 ```
 
